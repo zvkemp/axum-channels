@@ -46,7 +46,6 @@ impl DecoratedMessage {
 
 #[derive(Debug, Clone)]
 pub enum MessageReply {
-    None,
     Reply(String),
     Broadcast(String),
     Join(
@@ -55,6 +54,8 @@ pub enum MessageReply {
             broadcast::Receiver<MessageReply>,
         )>,
     ),
+
+    Pong(Vec<u8>),
 }
 
 impl MessageReply {

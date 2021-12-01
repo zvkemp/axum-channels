@@ -162,13 +162,24 @@ async fn read(
                     // Err(_) => todo!(),
                 }
                 ws::Message::Binary(_) => todo!(),
-                ws::Message::Ping(_) => todo!(),
+                ws::Message::Ping(data) => reply_sender.send(MessageReply::Pong(data)).unwrap(), // FIXME unwrap
                 ws::Message::Pong(_) => todo!(),
                 ws::Message::Close(_) => todo!(),
             },
             Err(e) => {
                 eprintln!("error={:?}", e);
             }
+        }
+    }
+}
+
+impl From<MessageReply> for ws::Message {
+    fn from(msg: MessageReply) -> Self {
+        match msg {
+            MessageReply::Reply(text) => ws::Message::Text(text),
+            MessageReply::Broadcast(text) => ws::Message::Text(text),
+            MessageReply::Join(_) => todo!(),
+            MessageReply::Pong(data) => ws::Message::Pong(data),
         }
     }
 }
@@ -184,10 +195,9 @@ async fn write(
     registry.lock().unwrap().register_writer(token, sender);
 
     while let Some(msg) = receiver.recv().await {
-        println!("[write] msg = {:?}", msg);
-        writer
-            .send(ws::Message::Text(format!("{:?}", msg)))
-            .await
-            .unwrap();
+        let ws_msg: ws::Message = msg.into();
+
+        println!("[write] msg = {:?}", ws_msg);
+        writer.send(ws_msg).await.unwrap();
     }
 }

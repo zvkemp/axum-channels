@@ -20,8 +20,8 @@ pub struct Channel {
 }
 
 pub trait ChannelBehavior {
-    fn handle_message(&mut self, message: &DecoratedMessage) -> MessageReply {
-        MessageReply::None
+    fn handle_message(&mut self, message: &DecoratedMessage) -> Option<MessageReply> {
+        None
     }
 }
 
@@ -61,18 +61,18 @@ impl Channel {
                     self.handle_join(message);
                 } else {
                     match self.behavior.handle_message(&message) {
-                        MessageReply::None => {
+                        None => {
                             println!("got MessageReply::None");
                         }
                         // Reply should send a Token-keyed message back to some place; either a central broker
                         // or a oneshot channel (this would necessitate the caller knowing that a reply is sent, and should listen for it)
-                        MessageReply::Reply(inner) => {
+                        Some(MessageReply::Reply(inner)) => {
                             if let Some(reply_to) = message.reply_to {
                                 println!("sending reply...");
                                 reply_to.send(MessageReply::Reply(inner));
                             }
                         }
-                        MessageReply::Broadcast(msg) => {
+                        Some(MessageReply::Broadcast(msg)) => {
                             println!("broadcasting...");
                             self.broadcast_sender.send(MessageReply::Broadcast(msg));
                         }
