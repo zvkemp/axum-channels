@@ -8,20 +8,9 @@ use crate::types::{ChannelId, Token};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Message {
-    Channel {
-        channel_id: String,
-        // token: Token,
-        text: String,
-    },
-
-    Join {
-        channel_id: String,
-        // token: Token,
-    },
-
-    Leave {
-        channel_id: String,
-    },
+    Channel { channel_id: String, text: String },
+    Join { channel_id: String },
+    Leave { channel_id: String },
 }
 
 impl Message {
@@ -38,8 +27,8 @@ impl Message {
 #[derive(Debug)]
 pub struct DecoratedMessage {
     pub token: Token,
-    channel_id: ChannelId,
-    inner: Message,
+    pub channel_id: ChannelId,
+    pub inner: Message,
     pub reply_to: Option<oneshot::Sender<MessageReply>>,
 }
 

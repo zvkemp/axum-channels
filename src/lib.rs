@@ -1,19 +1,13 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-
-use axum::extract::ws::{self, CloseFrame, WebSocket, WebSocketUpgrade};
-use axum::extract::Extension;
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{AddExtensionLayer, Router};
+use axum::extract::ws::{self, CloseFrame, WebSocket};
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, SplitStream, StreamExt};
 use message::DecoratedMessage;
 use registry::Registry;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::sync::{broadcast, oneshot};
-use tokio::task::JoinHandle;
 use types::Token;
 
 use crate::message::{Message, MessageReply};
@@ -24,28 +18,10 @@ use crate::message::{Message, MessageReply};
 // - a socket can subscribe to any channel by name (join?)
 // - periodically send PING to client, await PONG (should register a timeout and cancel it when the pong is received?)
 
-mod channel;
-mod message;
-mod registry;
-mod types;
-
-#[tokio::main]
-async fn main() {
-    let mut registry = Arc::new(Mutex::new(Registry::default()));
-    let app = Router::new()
-        .route("/ws", get(handler))
-        .layer(AddExtensionLayer::new(registry));
-
-    axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
-}
-
-fn get_id() -> usize {
-    static COUNTER: AtomicUsize = AtomicUsize::new(1);
-    COUNTER.fetch_add(1, Ordering::Relaxed)
-}
+pub mod channel;
+pub mod message;
+pub mod registry;
+pub mod types;
 
 // channel responses should be:
 //  - reply (send a reply to the sender)
@@ -59,26 +35,33 @@ fn get_id() -> usize {
 
 // FIXME: it may be beneficial to use RwLock instead of Mutex, though the locking operations
 // will probably only happen when mpsc channels are opened for new connections / subscriptions.
-async fn handler(
-    ws: WebSocketUpgrade,
-    Extension(registry): Extension<Arc<Mutex<Registry>>>,
-) -> impl IntoResponse {
-    println!("handler");
-    ws.on_upgrade(move |socket| handle_connect(socket, registry.clone()))
+
+// FIXME: this is more or less for testing purposes; the endpoint selected
+// will establish which serialization format will be used for the client.
+#[derive(Debug, Clone, Copy)]
+pub enum ConnFormat {
+    JSON,
+    Simple,
 }
 
-async fn handle_connect(mut socket: WebSocket, registry: Arc<Mutex<Registry>>) {
-    let token = get_id();
+fn get_token() -> Token {
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed).into()
+}
+
+pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc<Mutex<Registry>>) {
+    let token = get_token();
     let (mut writer, mut reader) = socket.split();
     let (sender, receiver) = unbounded_channel();
     tokio::spawn(write(
         token,
+        format,
         writer,
         receiver,
         sender.clone(),
         registry.clone(),
     ));
-    tokio::spawn(read(token, reader, sender, registry.clone()));
+    tokio::spawn(read(token, format, reader, sender, registry.clone()));
 }
 
 // A set of senders pointing to the subscribed channels.
@@ -117,6 +100,7 @@ fn spawn_subscriber(
     mut broadcast: broadcast::Receiver<MessageReply>,
     reply_sender: UnboundedSender<MessageReply>,
 ) {
+    // FIXME: this task needs cancellation
     tokio::spawn(async move {
         while let Ok(msg) = broadcast.recv().await {
             // FIXME: also need the socket writer here
@@ -127,9 +111,65 @@ fn spawn_subscriber(
     });
 }
 
+// FIXME: should be temporary?
+fn parse_message(
+    message: &str,
+    format: &ConnFormat,
+) -> Result<Message, Box<dyn std::error::Error + Send + Sync>> {
+    match format {
+        &ConnFormat::JSON => serde_json::from_str(message).map_err(Into::into),
+        &ConnFormat::Simple => SimpleParser::from_str(message).map_err(Into::into),
+    }
+}
+
+struct SimpleParser;
+
+// join default
+// message | hello
+//
+impl SimpleParser {
+    pub fn from_str(input: &str) -> Result<Message, String> {
+        let mut segments = input.split("|");
+        let mut token_args = segments.next().unwrap().split_whitespace();
+
+        println!(
+            "token_args = {:?}",
+            token_args.clone().collect::<Vec<&str>>()
+        );
+
+        let command = token_args.next();
+        let channel_id = token_args.next().or(Some("default")).unwrap().to_string();
+
+        if command.is_some() {
+            match command.unwrap() {
+                "join" | "j" => {
+                    return Ok(Message::Join { channel_id });
+                }
+                "message" | "m" | "msg" => {
+                    return Ok(Message::Channel {
+                        channel_id,
+                        text: segments.next().unwrap().to_string(),
+                    });
+                }
+                "leave" | "l" => {
+                    return Ok(Message::Leave { channel_id });
+                }
+
+                _ => {}
+            }
+        }
+
+        // in all other cases, just echo the input
+        Ok(Message::Channel {
+            channel_id,
+            text: input.to_string(),
+        })
+    }
+}
 // reading data from remote
 async fn read(
-    token: usize,
+    token: Token,
+    format: ConnFormat,
     mut receiver: SplitStream<WebSocket>,
     reply_sender: UnboundedSender<MessageReply>,
     registry: Arc<Mutex<Registry>>,
@@ -140,7 +180,7 @@ async fn read(
             Ok(inner) => match inner {
                 ws::Message::Text(inner) => {
                     // eep
-                    let msg: Result<Message, _> = serde_json::from_str(&inner);
+                    let msg: Result<Message, _> = parse_message(&inner, &format);
 
                     match msg {
                         /*
@@ -164,7 +204,17 @@ async fn read(
                                 eprintln!("channel not active");
                             }
                         }
-                        Ok(Message::Channel { .. }) => todo!(),
+                        Ok(Message::Channel { channel_id, text }) => {
+                            if let Some(tx) = subscriptions.channels.get(&channel_id) {
+                                tx.send(
+                                    Message::Channel {
+                                        channel_id: channel_id.clone(),
+                                        text,
+                                    }
+                                    .decorate(token, channel_id),
+                                );
+                            }
+                        }
                         Err(e) => {
                             eprintln!("{:?}", e);
                         }
@@ -197,7 +247,8 @@ fn handle_write_close(token: Token, registry: Arc<Mutex<Registry>>) {
 }
 
 async fn write(
-    token: usize,
+    token: Token,
+    format: ConnFormat,
     mut writer: SplitSink<WebSocket, ws::Message>,
     mut receiver: UnboundedReceiver<MessageReply>,
     sender: UnboundedSender<MessageReply>,

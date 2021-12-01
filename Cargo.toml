@@ -1,13 +1,14 @@
 [package]
-name = "ws-test"
+name = "axum-channels"
 version = "0.1.0"
 edition = "2021"
+authors = ["Zach Kemp <zvkemp@gmail.com>"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 axum = { version = "*", features = ["ws"] }
-tokio = { version = "*", features = ["full"] }
 futures = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+tokio = { version = "*", features = ["full"] }

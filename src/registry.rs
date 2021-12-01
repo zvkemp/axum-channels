@@ -3,11 +3,8 @@ use crate::{
     message::{DecoratedMessage, Message, MessageReply},
     types::{ChannelId, Token},
 };
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{
-    mpsc::{UnboundedReceiver, UnboundedSender},
-    oneshot,
-};
+use std::collections::HashMap;
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 #[derive(Debug)]
 pub struct Registry {
@@ -32,7 +29,17 @@ impl Default for Registry {
 // FIXME: move
 struct DefaultChannel;
 
-impl ChannelBehavior for DefaultChannel {}
+impl ChannelBehavior for DefaultChannel {
+    fn handle_message(&mut self, message: &DecoratedMessage) -> Option<MessageReply> {
+        match &message.inner {
+            Message::Channel { text, .. } => Some(MessageReply::Broadcast(format!(
+                "[{}] {}",
+                message.token, text
+            ))),
+            _ => None,
+        }
+    }
+}
 
 // This Registry can probably be used in two ways:
 // - global registry, which keeps track of all ws channels and socket mpsc channels
@@ -40,11 +47,11 @@ impl ChannelBehavior for DefaultChannel {}
 impl Registry {
     // the write half of the socket is connected to the receiver, and the sender here will handle
     // channel subscriptions
-    pub fn register_writer(&mut self, token: usize, sender: UnboundedSender<MessageReply>) {
+    pub fn register_writer(&mut self, token: Token, sender: UnboundedSender<MessageReply>) {
         self.sockets.entry(token).or_insert(sender); // this will be a way to communicate with sockets
     }
 
-    pub fn deregister_writer(&mut self, token: usize) {
+    pub fn deregister_writer(&mut self, token: Token) {
         self.sockets.remove(&token);
     }
 
@@ -63,7 +70,9 @@ impl Registry {
             .decorate(token, channel_id);
             msg.reply_to = Some(tx);
 
-            channel.send(msg);
+            if let Err(e) = channel.send(msg) {
+                eprintln!("unexpected error in subscription confirmation; {:?}", e);
+            };
             return Some(rx);
         }
 

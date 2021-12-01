@@ -20,11 +20,12 @@ pub struct Channel {
 }
 
 pub trait ChannelBehavior {
-    fn handle_message(&mut self, message: &DecoratedMessage) -> Option<MessageReply> {
+    fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<MessageReply> {
         None
     }
 }
 
+// FIXME: add channel id
 impl Channel {
     pub fn new(behavior: Box<dyn ChannelBehavior + Sync + Send>) -> Self {
         let (incoming_sender, incoming_receiver) = unbounded_channel();
@@ -71,12 +72,17 @@ impl Channel {
                         Some(MessageReply::Reply(inner)) => {
                             if let Some(reply_to) = message.reply_to {
                                 println!("sending reply...");
-                                reply_to.send(MessageReply::Reply(inner));
+                                if let Err(e) = reply_to.send(MessageReply::Reply(inner)) {
+                                    eprintln!("unexpected error in reply; error={:?}", e);
+                                };
                             }
                         }
                         Some(MessageReply::Broadcast(msg)) => {
                             println!("broadcasting...");
-                            self.broadcast_sender.send(MessageReply::Broadcast(msg));
+                            if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast(msg))
+                            {
+                                eprintln!("unexpected error in broadcast; err={:?}", e);
+                            };
                         }
 
                         _ => {
