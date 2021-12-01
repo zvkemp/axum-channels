@@ -59,6 +59,8 @@ impl Channel {
 
                 if message.is_join() {
                     self.handle_join(message);
+                } else if message.is_leave() {
+                    self.handle_leave(message);
                 } else {
                     match self.behavior.handle_message(&message) {
                         None => {
@@ -76,6 +78,7 @@ impl Channel {
                             println!("broadcasting...");
                             self.broadcast_sender.send(MessageReply::Broadcast(msg));
                         }
+
                         _ => {
                             todo!()
                         }
@@ -103,6 +106,17 @@ impl Channel {
             }
             _ => todo!(),
         }
+    }
+
+    // FIXME: also pass this to behavior?
+    // Some behaviors may want to set presence
+    fn handle_leave(&self, message: DecoratedMessage) -> () {
+        self.broadcast_sender
+            .send(MessageReply::Broadcast(format!(
+                "socket {} left the channel. Goodbye!",
+                message.token
+            )))
+            .unwrap();
     }
 
     // FIXME: what should this look like?

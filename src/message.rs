@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::extract::ws;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc::UnboundedSender, oneshot};
 
@@ -16,6 +17,10 @@ pub enum Message {
     Join {
         channel_id: String,
         // token: Token,
+    },
+
+    Leave {
+        channel_id: String,
     },
 }
 
@@ -42,6 +47,10 @@ impl DecoratedMessage {
     pub fn is_join(&self) -> bool {
         matches!(self.inner, Message::Join { .. })
     }
+
+    pub fn is_leave(&self) -> bool {
+        matches!(self.inner, Message::Leave { .. })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -65,5 +74,16 @@ impl MessageReply {
 
     pub fn is_broadcast(&self) -> bool {
         matches!(self, MessageReply::Broadcast(..))
+    }
+}
+
+impl From<MessageReply> for ws::Message {
+    fn from(msg: MessageReply) -> Self {
+        match msg {
+            MessageReply::Reply(text) => ws::Message::Text(text),
+            MessageReply::Broadcast(text) => ws::Message::Text(text),
+            MessageReply::Join(_) => todo!(),
+            MessageReply::Pong(data) => ws::Message::Pong(data),
+        }
     }
 }

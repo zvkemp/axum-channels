@@ -44,6 +44,10 @@ impl Registry {
         self.sockets.entry(token).or_insert(sender); // this will be a way to communicate with sockets
     }
 
+    pub fn deregister_writer(&mut self, token: usize) {
+        self.sockets.remove(&token);
+    }
+
     pub fn subscribe(
         &self,
         channel_id: ChannelId,

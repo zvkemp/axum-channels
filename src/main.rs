@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{self, CloseFrame, WebSocket, WebSocketUpgrade};
 use axum::extract::Extension;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -11,7 +11,6 @@ use futures::sink::SinkExt;
 use futures::stream::{SplitSink, SplitStream, StreamExt};
 use message::DecoratedMessage;
 use registry::Registry;
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
@@ -23,6 +22,7 @@ use crate::message::{Message, MessageReply};
 // - make this a lib
 // - each socket gets a private channel; messages can be sent to that particular socket.
 // - a socket can subscribe to any channel by name (join?)
+// - periodically send PING to client, await PONG (should register a timeout and cancel it when the pong is received?)
 
 mod channel;
 mod message;
@@ -81,19 +81,35 @@ async fn handle_connect(mut socket: WebSocket, registry: Arc<Mutex<Registry>>) {
     tokio::spawn(read(token, reader, sender, registry.clone()));
 }
 
+// A set of senders pointing to the subscribed channels.
 pub struct ReaderSubscriptions {
     channels: HashMap<String, UnboundedSender<DecoratedMessage>>,
+    token: Token,
 }
 
 impl ReaderSubscriptions {
-    pub fn new() -> Self {
+    pub fn new(token: Token) -> Self {
         Self {
             channels: Default::default(),
+            token: token,
         }
     }
 
     pub fn insert(&mut self, channel_id: String, sender: UnboundedSender<DecoratedMessage>) {
         self.channels.entry(channel_id).or_insert(sender);
+    }
+}
+
+impl Drop for ReaderSubscriptions {
+    fn drop(&mut self) {
+        for (channel_id, sender) in &self.channels {
+            sender.send(
+                Message::Leave {
+                    channel_id: channel_id.to_string(),
+                }
+                .decorate(self.token, channel_id.to_string()),
+            );
+        }
     }
 }
 
@@ -118,7 +134,7 @@ async fn read(
     reply_sender: UnboundedSender<MessageReply>,
     registry: Arc<Mutex<Registry>>,
 ) {
-    let mut subscriptions = ReaderSubscriptions::new();
+    let mut subscriptions = ReaderSubscriptions::new(token);
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(inner) => match inner {
@@ -149,6 +165,7 @@ async fn read(
                         Err(e) => {
                             eprintln!("{:?}", e);
 
+                            // FIXME: remove this
                             let msg = Message::Join {
                                 channel_id: "default".to_string(),
                             };
@@ -157,14 +174,11 @@ async fn read(
                         }
                         _ => todo!(),
                     }
-
-                    // Ok(msg) => match msg {},
-                    // Err(_) => todo!(),
                 }
                 ws::Message::Binary(_) => todo!(),
                 ws::Message::Ping(data) => reply_sender.send(MessageReply::Pong(data)).unwrap(), // FIXME unwrap
                 ws::Message::Pong(_) => todo!(),
-                ws::Message::Close(_) => todo!(),
+                ws::Message::Close(frame) => return handle_read_close(token, frame),
             },
             Err(e) => {
                 eprintln!("error={:?}", e);
@@ -173,15 +187,14 @@ async fn read(
     }
 }
 
-impl From<MessageReply> for ws::Message {
-    fn from(msg: MessageReply) -> Self {
-        match msg {
-            MessageReply::Reply(text) => ws::Message::Text(text),
-            MessageReply::Broadcast(text) => ws::Message::Text(text),
-            MessageReply::Join(_) => todo!(),
-            MessageReply::Pong(data) => ws::Message::Pong(data),
-        }
-    }
+fn handle_read_close(token: Token, _frame: Option<CloseFrame>) {
+    println!("socket {} closed", token)
+}
+
+fn handle_write_close(token: Token, registry: Arc<Mutex<Registry>>) {
+    println!("socket writer {} closed", token);
+
+    registry.lock().unwrap().deregister_writer(token);
 }
 
 async fn write(
@@ -198,6 +211,12 @@ async fn write(
         let ws_msg: ws::Message = msg.into();
 
         println!("[write] msg = {:?}", ws_msg);
-        writer.send(ws_msg).await.unwrap();
+        match writer.send(ws_msg).await {
+            Ok(..) => {}
+            Err(..) => {
+                return handle_write_close(token, registry);
+                // FIXME: this assumes ConnectionClosed (axum errors somewhat opaque, can't be matched)
+            }
+        }
     }
 }
