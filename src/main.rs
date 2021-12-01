@@ -143,6 +143,9 @@ async fn read(
                     let msg: Result<Message, _> = serde_json::from_str(&inner);
 
                     match msg {
+                        /*
+                        {"Join":{"channel_id":"default"}}
+                        */
                         Ok(Message::Join { channel_id }) => {
                             println!("joining token={}, channel={}", token, channel_id);
                             println!("{:#?}", registry);
@@ -164,13 +167,6 @@ async fn read(
                         Ok(Message::Channel { .. }) => todo!(),
                         Err(e) => {
                             eprintln!("{:?}", e);
-
-                            // FIXME: remove this
-                            let msg = Message::Join {
-                                channel_id: "default".to_string(),
-                            };
-                            let serialized = serde_json::to_string(&msg);
-                            eprintln!("{}", serialized.unwrap());
                         }
                         _ => todo!(),
                     }
@@ -178,7 +174,10 @@ async fn read(
                 ws::Message::Binary(_) => todo!(),
                 ws::Message::Ping(data) => reply_sender.send(MessageReply::Pong(data)).unwrap(), // FIXME unwrap
                 ws::Message::Pong(_) => todo!(),
-                ws::Message::Close(frame) => return handle_read_close(token, frame),
+                ws::Message::Close(frame) => {
+                    handle_write_close(token, registry); // it's entirely possible this will get called more than once
+                    return handle_read_close(token, frame);
+                }
             },
             Err(e) => {
                 eprintln!("error={:?}", e);
