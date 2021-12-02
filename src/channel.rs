@@ -1,3 +1,5 @@
+// High-level FIXME:
+// a pattern like the Axum extractor macros may be worthwhile exploring here
 use std::{collections::HashMap, sync::Arc};
 
 use tokio::{
@@ -19,9 +21,18 @@ pub struct Channel {
     behavior: Box<dyn ChannelBehavior + Sync + Send>,
 }
 
+pub enum JoinError {
+    Unauthorized,
+    Unknown,
+}
+
 pub trait ChannelBehavior {
-    fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<MessageReply> {
+    fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<Message> {
         None
+    }
+
+    fn handle_join(&mut self, message: &DecoratedMessage) -> Result<(), JoinError> {
+        Ok(())
     }
 }
 
@@ -61,7 +72,9 @@ impl Channel {
 
                 // FIXME: also pass Join to callback to allow behavior to do things
                 if message.is_join() {
-                    self.handle_join(message);
+                    self.behavior
+                        .handle_join(&message)
+                        .and_then(|res| Ok(self.handle_join(message)));
                 } else if message.is_leave() {
                     self.handle_leave(message);
                 } else {
@@ -69,7 +82,7 @@ impl Channel {
                         None => {
                             println!("got MessageReply::None");
                         }
-                        Some(MessageReply::Reply(inner)) => {
+                        Some(Message::Reply(inner)) => {
                             if let Some(reply_to) = message.reply_to {
                                 println!("sending reply...");
                                 if let Err(e) = reply_to.send(Message::Reply(inner)) {
@@ -77,7 +90,7 @@ impl Channel {
                                 };
                             }
                         }
-                        Some(MessageReply::Broadcast(msg)) => {
+                        Some(Message::Broadcast(msg)) => {
                             println!("broadcasting...");
                             if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast(msg))
                             {

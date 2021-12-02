@@ -30,12 +30,11 @@ impl Default for Registry {
 struct DefaultChannel;
 
 impl ChannelBehavior for DefaultChannel {
-    fn handle_message(&mut self, message: &DecoratedMessage) -> Option<MessageReply> {
+    fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
         match &message.inner {
-            Message::Channel { text, .. } => Some(MessageReply::Broadcast(format!(
-                "[{}] {}",
-                message.token, text
-            ))),
+            Message::Channel { text, .. } => {
+                Some(Message::Broadcast(format!("[{}] {}", message.token, text)))
+            }
             _ => None,
         }
     }

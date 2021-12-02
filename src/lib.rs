@@ -85,13 +85,15 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
 pub struct ReaderSubscriptions {
     channels: HashMap<String, UnboundedSender<DecoratedMessage>>,
     token: Token,
+    mailbox_tx: UnboundedSender<Message>,
 }
 
 impl ReaderSubscriptions {
-    pub fn new(token: Token) -> Self {
+    pub fn new(token: Token, mailbox_tx: UnboundedSender<Message>) -> Self {
         Self {
             channels: Default::default(),
             token: token,
+            mailbox_tx,
         }
     }
 
@@ -107,7 +109,11 @@ impl Drop for ReaderSubscriptions {
                 Message::Leave {
                     channel_id: channel_id.to_string(),
                 }
-                .decorate(self.token, channel_id.to_string()),
+                .decorate(
+                    self.token,
+                    channel_id.to_string(),
+                    self.mailbox_tx.clone(),
+                ),
             );
         }
     }
@@ -191,7 +197,7 @@ async fn read(
     reply_sender: UnboundedSender<MessageReply>,
     registry: Arc<Mutex<Registry>>,
 ) {
-    let mut subscriptions = ReaderSubscriptions::new(token);
+    let mut subscriptions = ReaderSubscriptions::new(token, conn.mailbox_tx.clone());
 
     let format = conn.format.clone();
     let mailbox_tx = conn.mailbox_tx.clone();
@@ -241,8 +247,7 @@ async fn read(
                 let mut decorated = Message::Join {
                     channel_id: channel_id.clone(),
                 }
-                .decorate(token, channel_id);
-                decorated.reply_to = Some(conn.mailbox_tx.clone());
+                .decorate(token, channel_id, conn.mailbox_tx.clone());
                 decorated.broadcast_reply_to = Some(reply_sender.clone());
 
                 let locked = registry.lock().unwrap();
@@ -267,13 +272,21 @@ async fn read(
                             channel_id: channel_id.clone(),
                             text,
                         }
-                        .decorate(token, channel_id),
+                        .decorate(
+                            token,
+                            channel_id,
+                            conn.mailbox_tx.clone(),
+                        ),
                     );
                 }
             }
             Message::Leave { channel_id } => todo!(),
             Message::Reply(text) => {
                 reply_sender.send(MessageReply::Reply(text));
+            }
+
+            Message::Broadcast(text) => {
+                todo!() // This probably shouldn't be sent here
             }
         }
     }

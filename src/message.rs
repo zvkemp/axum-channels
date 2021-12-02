@@ -37,15 +37,21 @@ pub enum Message {
 
     // FIXME: duplicate of MessageReply::Reply
     Reply(String),
+    Broadcast(String),
 }
 
 impl Message {
-    pub fn decorate(self, token: Token, channel_id: ChannelId) -> DecoratedMessage {
+    pub fn decorate(
+        self,
+        token: Token,
+        channel_id: ChannelId,
+        reply_to: UnboundedSender<Message>,
+    ) -> DecoratedMessage {
         DecoratedMessage {
             token,
             channel_id,
             inner: self,
-            reply_to: None,
+            reply_to: Some(reply_to),
             broadcast_reply_to: None,
         }
     }
