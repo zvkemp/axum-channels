@@ -78,4 +78,14 @@ impl Registry {
 
         None
     }
+
+    // FIXME: handle errors
+    pub fn add_channel(
+        &mut self,
+        channel_id: ChannelId,
+        behavior: Box<dyn ChannelBehavior + Sync + Send>,
+    ) {
+        let (_, channel) = Channel::spawn(behavior);
+        self.channels.entry(channel_id).or_insert(channel);
+    }
 }

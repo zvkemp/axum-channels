@@ -65,6 +65,8 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
 }
 
 // A set of senders pointing to the subscribed channels.
+// Avoids a central message bus, instad allows sockets to more-or-less directly send messages
+// to the intended channels.
 pub struct ReaderSubscriptions {
     channels: HashMap<String, UnboundedSender<DecoratedMessage>>,
     token: Token,
@@ -170,12 +172,12 @@ impl SimpleParser {
 async fn read(
     token: Token,
     format: ConnFormat,
-    mut receiver: SplitStream<WebSocket>,
+    mut ws_receiver: SplitStream<WebSocket>,
     reply_sender: UnboundedSender<MessageReply>,
     registry: Arc<Mutex<Registry>>,
 ) {
     let mut subscriptions = ReaderSubscriptions::new(token);
-    while let Some(msg) = receiver.next().await {
+    while let Some(msg) = ws_receiver.next().await {
         match msg {
             Ok(inner) => match inner {
                 ws::Message::Text(inner) => {
@@ -189,6 +191,19 @@ async fn read(
                         Ok(Message::Join { channel_id }) => {
                             println!("joining token={}, channel={}", token, channel_id);
                             println!("{:#?}", registry);
+                            // FIXME: if possible `subscribe` should do all of the work necessary to
+                            // run this subscription, without the additional processing steps. This would
+                            // allow channels to spawn subscriptions to other channels.
+
+                            // Alternately,
+                            //  - change Token to Token(usize, sender)
+                            //  - change this loop to merge the associated receiver and ws receiver streams
+                            //  - allow channels to send messages back to this loop.
+
+                            // Alternately,
+                            //  - move `spawn_subscriber` into Registry
+                            //  - lazily update ReaderSubscriptions when a message is sent
+                            // (this might allow getting rid of the oneshot callbacks)
                             let rx = {
                                 let locked = registry.lock().unwrap();
                                 locked.subscribe(channel_id.clone(), token)

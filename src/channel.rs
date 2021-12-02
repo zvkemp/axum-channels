@@ -40,6 +40,7 @@ impl Channel {
         }
     }
 
+    // FIXME: need a way to receive a shutdown message
     pub fn spawn(
         behavior: Box<dyn ChannelBehavior + Sync + Send>,
     ) -> (JoinHandle<()>, UnboundedSender<DecoratedMessage>) {
@@ -58,6 +59,7 @@ impl Channel {
             while let Some(message) = self.incoming_receiver.recv().await {
                 println!("msg={:#?}", message);
 
+                // FIXME: also pass Join to callback to allow behavior to do things
                 if message.is_join() {
                     self.handle_join(message);
                 } else if message.is_leave() {
@@ -94,6 +96,9 @@ impl Channel {
         })
     }
 
+    // FIXME: join should be a fallible operation (e.g. allow for Authorization).
+    // The volume of join requests would probably be sufficient to have everything go
+    // through the locked Registry mutex, though it would be nice not to have to.
     fn handle_join(&self, message: DecoratedMessage) -> () {
         match message.reply_to {
             Some(tx) => {
