@@ -23,6 +23,12 @@ pub mod message;
 pub mod registry;
 pub mod types;
 
+pub struct Conn {
+    format: ConnFormat,
+    mailbox_tx: UnboundedSender<Message>,
+    mailbox_rx: UnboundedReceiver<Message>,
+}
+
 // channel responses should be:
 //  - reply (send a reply to the sender)
 //  - broadcast (send a reply to all members of the channel)
@@ -53,6 +59,15 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
     let token = get_token();
     let (mut writer, mut reader) = socket.split();
     let (sender, receiver) = unbounded_channel();
+
+    let (mailbox_tx, mailbox_rx) = unbounded_channel();
+
+    let conn = Conn {
+        mailbox_tx,
+        mailbox_rx,
+        format,
+    };
+
     tokio::spawn(write(
         token,
         format,
@@ -61,7 +76,7 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
         sender.clone(),
         registry.clone(),
     ));
-    tokio::spawn(read(token, format, reader, sender, registry.clone()));
+    tokio::spawn(read(token, conn, reader, sender, registry.clone()));
 }
 
 // A set of senders pointing to the subscribed channels.
@@ -171,82 +186,100 @@ impl SimpleParser {
 // reading data from remote
 async fn read(
     token: Token,
-    format: ConnFormat,
+    mut conn: Conn,
     mut ws_receiver: SplitStream<WebSocket>,
     reply_sender: UnboundedSender<MessageReply>,
     registry: Arc<Mutex<Registry>>,
 ) {
     let mut subscriptions = ReaderSubscriptions::new(token);
-    while let Some(msg) = ws_receiver.next().await {
-        match msg {
-            Ok(inner) => match inner {
-                ws::Message::Text(inner) => {
-                    // eep
-                    let msg: Result<Message, _> = parse_message(&inner, &format);
 
-                    match msg {
-                        /*
-                        {"Join":{"channel_id":"default"}}
-                        */
-                        Ok(Message::Join { channel_id }) => {
-                            println!("joining token={}, channel={}", token, channel_id);
-                            println!("{:#?}", registry);
-                            // FIXME: if possible `subscribe` should do all of the work necessary to
-                            // run this subscription, without the additional processing steps. This would
-                            // allow channels to spawn subscriptions to other channels.
+    let format = conn.format.clone();
+    let mailbox_tx = conn.mailbox_tx.clone();
+    let ws_reply_sender = reply_sender.clone(); // directly send a response to the ws writer
+    let registry_c = registry.clone();
 
-                            // Alternately,
-                            //  - change Token to Token(usize, sender)
-                            //  - change this loop to merge the associated receiver and ws receiver streams
-                            //  - allow channels to send messages back to this loop.
+    // this task maps ws::Message to Message and sends them to mailbox_tx
+    let _ws_handle = tokio::spawn(async move {
+        while let Some(msg) = ws_receiver.next().await {
+            match msg {
+                Ok(inner) => match inner {
+                    ws::Message::Text(inner) => {
+                        // FIXME: eep
+                        let msg: Result<Message, _> = parse_message(&inner, &format);
 
-                            // Alternately,
-                            //  - move `spawn_subscriber` into Registry
-                            //  - lazily update ReaderSubscriptions when a message is sent
-                            // (this might allow getting rid of the oneshot callbacks)
-                            let rx = {
-                                let locked = registry.lock().unwrap();
-                                locked.subscribe(channel_id.clone(), token)
-                            };
-
-                            if rx.is_some() {
-                                if let Ok(MessageReply::Join(arc)) = rx.unwrap().await {
-                                    let (sender, bx) = Arc::try_unwrap(arc).unwrap();
-                                    subscriptions.insert(channel_id, sender);
-                                    spawn_subscriber(bx, reply_sender.clone());
-                                }
-                            } else {
-                                eprintln!("channel not active");
+                        match msg {
+                            Ok(msg) => mailbox_tx.send(msg).unwrap(),
+                            Err(e) => {
+                                eprintln!("{:?}", e);
                             }
                         }
-                        Ok(Message::Channel { channel_id, text }) => {
-                            if let Some(tx) = subscriptions.channels.get(&channel_id) {
-                                tx.send(
-                                    Message::Channel {
-                                        channel_id: channel_id.clone(),
-                                        text,
-                                    }
-                                    .decorate(token, channel_id),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("{:?}", e);
-                        }
-                        _ => todo!(),
                     }
+                    ws::Message::Binary(_) => todo!(),
+                    ws::Message::Ping(data) => {
+                        ws_reply_sender.send(MessageReply::Pong(data)).unwrap()
+                    } // FIXME unwrap
+                    ws::Message::Pong(_) => todo!(),
+                    ws::Message::Close(frame) => {
+                        handle_write_close(token, registry_c); // it's entirely possible this will get called more than once
+                        return handle_read_close(token, frame);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("error={:?}", e);
                 }
-                ws::Message::Binary(_) => todo!(),
-                ws::Message::Ping(data) => reply_sender.send(MessageReply::Pong(data)).unwrap(), // FIXME unwrap
-                ws::Message::Pong(_) => todo!(),
-                ws::Message::Close(frame) => {
-                    handle_write_close(token, registry); // it's entirely possible this will get called more than once
-                    return handle_read_close(token, frame);
-                }
-            },
-            Err(e) => {
-                eprintln!("error={:?}", e);
             }
+        }
+    });
+
+    while let Some(msg) = conn.mailbox_rx.recv().await {
+        match msg {
+            /*
+            {"Join":{"channel_id":"default"}}
+            */
+            Message::Join { channel_id } => {
+                println!("joining token={}, channel={}", token, channel_id);
+                println!("{:#?}", registry);
+                // FIXME: if possible `subscribe` should do all of the work necessary to
+                // run this subscription, without the additional processing steps. This would
+                // allow channels to spawn subscriptions to other channels.
+
+                // Alternately,
+                //  - change Token to Token(usize, sender)
+                //  - change this loop to merge the associated receiver and ws receiver streams
+                //  - allow channels to send messages back to this loop.
+
+                // Alternately,
+                //  - move `spawn_subscriber` into Registry
+                //  - lazily update ReaderSubscriptions when a message is sent
+                // (this might allow getting rid of the oneshot callbacks)
+                let rx = {
+                    let locked = registry.lock().unwrap();
+                    locked.subscribe(channel_id.clone(), token)
+                };
+
+                if rx.is_some() {
+                    if let Ok(MessageReply::Join(arc)) = rx.unwrap().await {
+                        let (sender, bx) = Arc::try_unwrap(arc).unwrap();
+                        subscriptions.insert(channel_id, sender);
+                        spawn_subscriber(bx, reply_sender.clone());
+                    }
+                } else {
+                    eprintln!("channel not active");
+                }
+            }
+
+            Message::Channel { channel_id, text } => {
+                if let Some(tx) = subscriptions.channels.get(&channel_id) {
+                    tx.send(
+                        Message::Channel {
+                            channel_id: channel_id.clone(),
+                            text,
+                        }
+                        .decorate(token, channel_id),
+                    );
+                }
+            }
+            Message::Leave { channel_id } => todo!(),
         }
     }
 }
