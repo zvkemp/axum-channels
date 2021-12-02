@@ -134,7 +134,7 @@ fn parse_message(
     format: &ConnFormat,
 ) -> Result<Message, Box<dyn std::error::Error + Send + Sync>> {
     match format {
-        &ConnFormat::JSON => serde_json::from_str(message).map_err(Into::into),
+        &ConnFormat::JSON => todo!(), // serde_json::from_str(message).map_err(Into::into),
         &ConnFormat::Simple => SimpleParser::from_str(message).map_err(Into::into),
     }
 }
@@ -238,34 +238,26 @@ async fn read(
             */
             Message::Join { channel_id } => {
                 println!("joining token={}, channel={}", token, channel_id);
-                println!("{:#?}", registry);
-                // FIXME: if possible `subscribe` should do all of the work necessary to
-                // run this subscription, without the additional processing steps. This would
-                // allow channels to spawn subscriptions to other channels.
-
-                // Alternately,
-                //  - change Token to Token(usize, sender)
-                //  - change this loop to merge the associated receiver and ws receiver streams
-                //  - allow channels to send messages back to this loop.
-
-                // Alternately,
-                //  - move `spawn_subscriber` into Registry
-                //  - lazily update ReaderSubscriptions when a message is sent
-                // (this might allow getting rid of the oneshot callbacks)
-                let rx = {
-                    let locked = registry.lock().unwrap();
-                    locked.subscribe(channel_id.clone(), token)
-                };
-
-                if rx.is_some() {
-                    if let Ok(MessageReply::Join(arc)) = rx.unwrap().await {
-                        let (sender, bx) = Arc::try_unwrap(arc).unwrap();
-                        subscriptions.insert(channel_id, sender);
-                        spawn_subscriber(bx, reply_sender.clone());
-                    }
-                } else {
-                    eprintln!("channel not active");
+                let mut decorated = Message::Join {
+                    channel_id: channel_id.clone(),
                 }
+                .decorate(token, channel_id);
+                decorated.reply_to = Some(conn.mailbox_tx.clone());
+                decorated.broadcast_reply_to = Some(reply_sender.clone());
+
+                let locked = registry.lock().unwrap();
+                locked.dispatch(decorated);
+            }
+            Message::DidJoin {
+                channel_id,
+                channel_sender,
+                broadcast_handle,
+            } => {
+                println!("received join confirmation");
+                subscriptions
+                    .channels
+                    .entry(channel_id.clone())
+                    .or_insert(channel_sender);
             }
 
             Message::Channel { channel_id, text } => {
@@ -280,6 +272,9 @@ async fn read(
                 }
             }
             Message::Leave { channel_id } => todo!(),
+            Message::Reply(text) => {
+                reply_sender.send(MessageReply::Reply(text));
+            }
         }
     }
 }

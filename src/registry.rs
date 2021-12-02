@@ -4,7 +4,7 @@ use crate::{
     types::{ChannelId, Token},
 };
 use std::collections::HashMap;
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug)]
 pub struct Registry {
@@ -41,6 +41,11 @@ impl ChannelBehavior for DefaultChannel {
     }
 }
 
+pub enum Error {
+    NoChannel,
+    Transport, // FIXME: use snafu?
+}
+
 // This Registry can probably be used in two ways:
 // - global registry, which keeps track of all ws channels and socket mpsc channels
 // - within the channel itself, to track subscribers
@@ -55,28 +60,14 @@ impl Registry {
         self.sockets.remove(&token);
     }
 
-    pub fn subscribe(
-        &self,
-        channel_id: ChannelId,
-        token: Token,
-    ) -> Option<oneshot::Receiver<MessageReply>> {
-        println!("subscribing {} to {}...", token, channel_id);
-
-        if let Some(channel) = self.channels.get(&channel_id) {
-            let (tx, rx) = oneshot::channel();
-            let mut msg = Message::Join {
-                channel_id: channel_id.clone(),
-            }
-            .decorate(token, channel_id);
-            msg.reply_to = Some(tx);
-
-            if let Err(e) = channel.send(msg) {
-                eprintln!("unexpected error in subscription confirmation; {:?}", e);
-            };
-            return Some(rx);
-        }
-
-        None
+    /// Send a message to a channel. Because the reigstry is typically behind a mutex,
+    /// this should be reserved for sockets that don't already have a copy of the channel sender.
+    pub fn dispatch(&self, message: DecoratedMessage) -> Result<(), Error> {
+        self.channels
+            .get(&message.channel_id)
+            .ok_or(Error::NoChannel)?
+            .send(message)
+            .map_err(|_| Error::Transport)
     }
 
     // FIXME: handle errors

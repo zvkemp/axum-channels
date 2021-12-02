@@ -15,7 +15,7 @@ pub struct Channel {
     incoming_sender: UnboundedSender<DecoratedMessage>,
     incoming_receiver: UnboundedReceiver<DecoratedMessage>,
     broadcast_sender: broadcast::Sender<MessageReply>,
-    broadcast_receiver: broadcast::Receiver<MessageReply>,
+    // broadcast_receiver: broadcast::Receiver<MessageReply>,
     behavior: Box<dyn ChannelBehavior + Sync + Send>,
 }
 
@@ -29,12 +29,12 @@ pub trait ChannelBehavior {
 impl Channel {
     pub fn new(behavior: Box<dyn ChannelBehavior + Sync + Send>) -> Self {
         let (incoming_sender, incoming_receiver) = unbounded_channel();
-        let (broadcast_sender, broadcast_receiver) = broadcast::channel(1024);
+        let (broadcast_sender, _broadcast_receiver) = broadcast::channel(1024);
 
         Self {
             incoming_sender,
             incoming_receiver,
-            broadcast_receiver,
+            // broadcast_receiver,
             broadcast_sender,
             behavior,
         }
@@ -69,12 +69,10 @@ impl Channel {
                         None => {
                             println!("got MessageReply::None");
                         }
-                        // Reply should send a Token-keyed message back to some place; either a central broker
-                        // or a oneshot channel (this would necessitate the caller knowing that a reply is sent, and should listen for it)
                         Some(MessageReply::Reply(inner)) => {
                             if let Some(reply_to) = message.reply_to {
                                 println!("sending reply...");
-                                if let Err(e) = reply_to.send(MessageReply::Reply(inner)) {
+                                if let Err(e) = reply_to.send(Message::Reply(inner)) {
                                     eprintln!("unexpected error in reply; error={:?}", e);
                                 };
                             }
@@ -100,12 +98,23 @@ impl Channel {
     // The volume of join requests would probably be sufficient to have everything go
     // through the locked Registry mutex, though it would be nice not to have to.
     fn handle_join(&self, message: DecoratedMessage) -> () {
-        match message.reply_to {
-            Some(tx) => {
-                tx.send(MessageReply::Join(Arc::new((
-                    self.incoming_sender.clone(),
-                    self.broadcast_sender.subscribe(),
-                ))))
+        match message {
+            DecoratedMessage {
+                channel_id,
+                inner: Message::Join { .. },
+                reply_to: Some(tx),
+                broadcast_reply_to: Some(broadcast_reply_to),
+                ..
+            } => {
+                tx.send(Message::DidJoin {
+                    channel_id,
+                    channel_sender: self.incoming_sender.clone(),
+                    // FIXME: spawn the task here
+                    broadcast_handle: spawn_broadcast_subscriber(
+                        broadcast_reply_to,
+                        self.broadcast_sender.subscribe(),
+                    ),
+                })
                 .unwrap(); // FIXME: unwrap
 
                 self.broadcast_sender
@@ -115,7 +124,7 @@ impl Channel {
                     )))
                     .unwrap(); // FIXME
             }
-            _ => todo!(),
+            _ => todo!("handle errors; this should not happen"),
         }
     }
 
@@ -135,4 +144,22 @@ impl Channel {
     // - should receive a clone of the incoming sender to send messages to the channel
     // - should
     // fn subscribe(&self, token: usize) -> broadcast::Receiver<DecoratedMessage> {}
+}
+
+use futures::stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_util::sync::PollSender;
+
+fn spawn_broadcast_subscriber(
+    socket_sender: UnboundedSender<MessageReply>,
+    mut broadcast: broadcast::Receiver<MessageReply>,
+) -> JoinHandle<()> {
+    // This would work for a Sender, but not UnboundedSender
+    // tokio::spawn(BroadcastStream::new(broadcast).forward(PollSender::new(socket_sender)))
+
+    tokio::spawn(async move {
+        while let Ok(msg_reply) = broadcast.recv().await {
+            socket_sender.send(msg_reply);
+        }
+    })
 }

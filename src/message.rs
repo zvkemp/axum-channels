@@ -1,16 +1,42 @@
 use std::sync::Arc;
 
 use axum::extract::ws;
-use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc::UnboundedSender, oneshot};
+// use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, mpsc::UnboundedSender};
 
 use crate::types::{ChannelId, Token};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+// FIXME: should be something more like:
+// pub enum Event {
+//   JoinRequest
+//   JoinResult
+//   LeaveRequest
+//   LeaveResult
+//   Message
+//   PutData/Assign/Remove/etc
+// }
+#[derive(Debug)]
 pub enum Message {
-    Channel { channel_id: String, text: String },
-    Join { channel_id: String },
-    Leave { channel_id: String },
+    Channel {
+        channel_id: String,
+        text: String,
+    },
+    Join {
+        channel_id: String,
+    },
+    // FIXME: also include broadcaster?
+    DidJoin {
+        channel_id: String,
+        channel_sender: UnboundedSender<DecoratedMessage>,
+        // FIXME: is this arc an appropriate way to send this through the channel?
+        broadcast_handle: tokio::task::JoinHandle<()>,
+    },
+    Leave {
+        channel_id: String,
+    },
+
+    // FIXME: duplicate of MessageReply::Reply
+    Reply(String),
 }
 
 impl Message {
@@ -20,6 +46,7 @@ impl Message {
             channel_id,
             inner: self,
             reply_to: None,
+            broadcast_reply_to: None,
         }
     }
 }
@@ -29,7 +56,8 @@ pub struct DecoratedMessage {
     pub token: Token,
     pub channel_id: ChannelId,
     pub inner: Message,
-    pub reply_to: Option<oneshot::Sender<MessageReply>>,
+    pub reply_to: Option<UnboundedSender<Message>>,
+    pub broadcast_reply_to: Option<UnboundedSender<MessageReply>>,
 }
 
 impl DecoratedMessage {
@@ -46,13 +74,6 @@ impl DecoratedMessage {
 pub enum MessageReply {
     Reply(String),
     Broadcast(String),
-    Join(
-        Arc<(
-            UnboundedSender<DecoratedMessage>,
-            broadcast::Receiver<MessageReply>,
-        )>,
-    ),
-
     Pong(Vec<u8>),
 }
 
@@ -71,7 +92,6 @@ impl From<MessageReply> for ws::Message {
         match msg {
             MessageReply::Reply(text) => ws::Message::Text(text),
             MessageReply::Broadcast(text) => ws::Message::Text(text),
-            MessageReply::Join(_) => todo!(),
             MessageReply::Pong(data) => ws::Message::Pong(data),
         }
     }
