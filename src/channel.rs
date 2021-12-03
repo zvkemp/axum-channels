@@ -1,23 +1,16 @@
 // High-level FIXME:
 // a pattern like the Axum extractor macros may be worthwhile exploring here
-use std::{collections::HashMap, sync::Arc};
-
-use tokio::{
-    sync::{
-        broadcast,
-        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
-    },
-    task::JoinHandle,
-};
-
 use crate::message::MessageReply;
 use crate::message::{DecoratedMessage, Message};
+use tokio::sync::broadcast;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
+use tracing::{debug, error};
 
 pub struct Channel {
     incoming_sender: UnboundedSender<DecoratedMessage>,
     incoming_receiver: UnboundedReceiver<DecoratedMessage>,
     broadcast_sender: broadcast::Sender<MessageReply>,
-    // broadcast_receiver: broadcast::Receiver<MessageReply>,
     behavior: Box<dyn ChannelBehavior + Sync + Send>,
 }
 
@@ -31,7 +24,7 @@ pub trait ChannelBehavior {
         None
     }
 
-    fn handle_join(&mut self, message: &DecoratedMessage) -> Result<(), JoinError> {
+    fn handle_join(&mut self, _message: &DecoratedMessage) -> Result<(), JoinError> {
         Ok(())
     }
 }
@@ -45,7 +38,6 @@ impl Channel {
         Self {
             incoming_sender,
             incoming_receiver,
-            // broadcast_receiver,
             broadcast_sender,
             behavior,
         }
@@ -64,37 +56,37 @@ impl Channel {
     }
 
     pub fn start(mut self) -> JoinHandle<()> {
-        println!("starting this channel");
+        debug!("starting this channel");
 
         tokio::spawn(async move {
             while let Some(message) = self.incoming_receiver.recv().await {
-                println!("msg={:#?}", message);
+                debug!("msg={:#?}", message);
 
                 // FIXME: also pass Join to callback to allow behavior to do things
                 if message.is_join() {
                     self.behavior
                         .handle_join(&message)
-                        .and_then(|res| Ok(self.handle_join(message)));
+                        .and_then(|_| Ok(self.handle_join(message)));
                 } else if message.is_leave() {
                     self.handle_leave(message);
                 } else {
                     match self.behavior.handle_message(&message) {
                         None => {
-                            println!("got MessageReply::None");
+                            debug!("got MessageReply::None");
                         }
                         Some(Message::Reply(inner)) => {
                             if let Some(reply_to) = message.reply_to {
-                                println!("sending reply...");
+                                debug!("sending reply...");
                                 if let Err(e) = reply_to.send(Message::Reply(inner)) {
-                                    eprintln!("unexpected error in reply; error={:?}", e);
+                                    error!("unexpected error in reply; error={:?}", e);
                                 };
                             }
                         }
                         Some(Message::Broadcast(msg)) => {
-                            println!("broadcasting...");
+                            debug!("broadcasting...");
                             if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast(msg))
                             {
-                                eprintln!("unexpected error in broadcast; err={:?}", e);
+                                error!("unexpected error in broadcast; err={:?}", e);
                             };
                         }
 
@@ -113,8 +105,7 @@ impl Channel {
     fn handle_join(&self, message: DecoratedMessage) -> () {
         match message {
             DecoratedMessage {
-                channel_id,
-                inner: Message::Join { .. },
+                inner: Message::Join { channel_id, .. },
                 reply_to: Some(tx),
                 broadcast_reply_to: Some(broadcast_reply_to),
                 ..
@@ -158,10 +149,6 @@ impl Channel {
     // - should
     // fn subscribe(&self, token: usize) -> broadcast::Receiver<DecoratedMessage> {}
 }
-
-use futures::stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_util::sync::PollSender;
 
 fn spawn_broadcast_subscriber(
     socket_sender: UnboundedSender<MessageReply>,

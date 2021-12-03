@@ -63,7 +63,7 @@ impl Registry {
     /// this should be reserved for sockets that don't already have a copy of the channel sender.
     pub fn dispatch(&self, message: DecoratedMessage) -> Result<(), Error> {
         self.channels
-            .get(&message.channel_id)
+            .get(message.channel_id())
             .ok_or(Error::NoChannel)?
             .send(message)
             .map_err(|_| Error::Transport)

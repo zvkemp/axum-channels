@@ -12,12 +12,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::connect_async;
 use tungstenite::protocol::Message as TgMessage;
 
 #[tokio::test]
 async fn test_websocket_lifecycle() {
-    let (address, server_handle) = run_server();
+    let (address, _server_handle) = run_server();
 
     let address = format!("ws://{}/ws", address);
     let (ws_stream, _) = connect_async(&address).await.expect("Failed to connect");

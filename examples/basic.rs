@@ -6,6 +6,7 @@ use axum::{
 };
 use axum_channels::{registry::Registry, ConnFormat};
 use std::sync::{Arc, Mutex};
+use tracing::debug;
 
 #[tokio::main]
 async fn main() {
@@ -25,7 +26,7 @@ async fn json_handler(
     ws: WebSocketUpgrade,
     Extension(registry): Extension<Arc<Mutex<Registry>>>,
 ) -> impl IntoResponse {
-    println!("handler");
+    debug!("handler");
     ws.on_upgrade(move |socket| {
         axum_channels::handle_connect(socket, ConnFormat::JSON, registry.clone())
     })
@@ -35,7 +36,7 @@ async fn simple_handler(
     ws: WebSocketUpgrade,
     Extension(registry): Extension<Arc<Mutex<Registry>>>,
 ) -> impl IntoResponse {
-    println!("simple_handler");
+    debug!("simple_handler");
     ws.on_upgrade(move |socket| {
         axum_channels::handle_connect(socket, ConnFormat::Simple, registry.clone())
     })

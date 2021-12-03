@@ -6,14 +6,13 @@ use registry::Registry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tracing::{debug, error};
 use types::Token;
 
 use crate::message::{Message, MessageReply};
 
 // TODO:
-// - make this a lib
 // - each socket gets a private channel; messages can be sent to that particular socket.
 // - a socket can subscribe to any channel by name (join?)
 // - periodically send PING to client, await PONG (should register a timeout and cancel it when the pong is received?)
@@ -23,6 +22,9 @@ pub mod message;
 pub mod registry;
 pub mod types;
 
+// FIXME: so far this provides minimal value;
+// something like https://docs.rs/http/0.2.5/http/struct.Extensions.html
+// would allow some form of mutable state without a lot of futzing with generics
 pub struct Conn {
     format: ConnFormat,
     mailbox_tx: UnboundedSender<Message>,
@@ -57,7 +59,7 @@ fn get_token() -> Token {
 
 pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc<Mutex<Registry>>) {
     let token = get_token();
-    let (mut writer, mut reader) = socket.split();
+    let (writer, reader) = socket.split();
     let (sender, receiver) = unbounded_channel();
 
     let (mailbox_tx, mailbox_rx) = unbounded_channel();
@@ -92,7 +94,7 @@ impl ReaderSubscriptions {
     pub fn new(token: Token, mailbox_tx: UnboundedSender<Message>) -> Self {
         Self {
             channels: Default::default(),
-            token: token,
+            token,
             mailbox_tx,
         }
     }
@@ -109,29 +111,10 @@ impl Drop for ReaderSubscriptions {
                 Message::Leave {
                     channel_id: channel_id.to_string(),
                 }
-                .decorate(
-                    self.token,
-                    channel_id.to_string(),
-                    self.mailbox_tx.clone(),
-                ),
+                .decorate(self.token, self.mailbox_tx.clone()),
             );
         }
     }
-}
-
-fn spawn_subscriber(
-    mut broadcast: broadcast::Receiver<MessageReply>,
-    reply_sender: UnboundedSender<MessageReply>,
-) {
-    // FIXME: this task needs cancellation
-    tokio::spawn(async move {
-        while let Ok(msg) = broadcast.recv().await {
-            // FIXME: also need the socket writer here
-            println!("received {:?} destined for socket", msg);
-
-            reply_sender.send(msg).unwrap();
-        }
-    });
 }
 
 // FIXME: should be temporary?
@@ -155,7 +138,7 @@ impl SimpleParser {
         let mut segments = input.split("|");
         let mut token_args = segments.next().unwrap().split_whitespace();
 
-        println!(
+        debug!(
             "token_args = {:?}",
             token_args.clone().collect::<Vec<&str>>()
         );
@@ -216,7 +199,7 @@ async fn read(
                         match msg {
                             Ok(msg) => mailbox_tx.send(msg).unwrap(),
                             Err(e) => {
-                                eprintln!("{:?}", e);
+                                error!("{:?}", e);
                             }
                         }
                     }
@@ -231,7 +214,7 @@ async fn read(
                     }
                 },
                 Err(e) => {
-                    eprintln!("error={:?}", e);
+                    error!("error={:?}", e);
                 }
             }
         }
@@ -243,11 +226,9 @@ async fn read(
             {"Join":{"channel_id":"default"}}
             */
             Message::Join { channel_id } => {
-                println!("joining token={}, channel={}", token, channel_id);
-                let mut decorated = Message::Join {
-                    channel_id: channel_id.clone(),
-                }
-                .decorate(token, channel_id, conn.mailbox_tx.clone());
+                debug!("joining token={}, channel={}", token, channel_id);
+                let mut decorated =
+                    Message::Join { channel_id }.decorate(token, conn.mailbox_tx.clone());
                 decorated.broadcast_reply_to = Some(reply_sender.clone());
 
                 let locked = registry.lock().unwrap();
@@ -256,9 +237,9 @@ async fn read(
             Message::DidJoin {
                 channel_id,
                 channel_sender,
-                broadcast_handle,
+                ..
             } => {
-                println!("received join confirmation");
+                debug!("received join confirmation");
                 subscriptions
                     .channels
                     .entry(channel_id.clone())
@@ -268,24 +249,17 @@ async fn read(
             Message::Channel { channel_id, text } => {
                 if let Some(tx) = subscriptions.channels.get(&channel_id) {
                     tx.send(
-                        Message::Channel {
-                            channel_id: channel_id.clone(),
-                            text,
-                        }
-                        .decorate(
-                            token,
-                            channel_id,
-                            conn.mailbox_tx.clone(),
-                        ),
+                        Message::Channel { channel_id, text }
+                            .decorate(token, conn.mailbox_tx.clone()),
                     );
                 }
             }
-            Message::Leave { channel_id } => todo!(),
+            Message::Leave { .. } => todo!(),
             Message::Reply(text) => {
                 reply_sender.send(MessageReply::Reply(text));
             }
 
-            Message::Broadcast(text) => {
+            Message::Broadcast(_) => {
                 todo!() // This probably shouldn't be sent here
             }
         }
@@ -293,18 +267,18 @@ async fn read(
 }
 
 fn handle_read_close(token: Token, _frame: Option<CloseFrame>) {
-    println!("socket {} closed", token)
+    debug!("socket {} closed", token)
 }
 
 fn handle_write_close(token: Token, registry: Arc<Mutex<Registry>>) {
-    println!("socket writer {} closed", token);
+    debug!("socket writer {} closed", token);
 
     registry.lock().unwrap().deregister_writer(token);
 }
 
 async fn write(
     token: Token,
-    format: ConnFormat,
+    _format: ConnFormat,
     mut writer: SplitSink<WebSocket, ws::Message>,
     mut receiver: UnboundedReceiver<MessageReply>,
     sender: UnboundedSender<MessageReply>,
@@ -316,7 +290,7 @@ async fn write(
     while let Some(msg) = receiver.recv().await {
         let ws_msg: ws::Message = msg.into();
 
-        println!("[write] msg = {:?}", ws_msg);
+        debug!("[write] msg = {:?}", ws_msg);
         match writer.send(ws_msg).await {
             Ok(..) => {}
             Err(..) => {
