@@ -11,7 +11,7 @@ pub struct Channel {
     incoming_sender: UnboundedSender<DecoratedMessage>,
     incoming_receiver: UnboundedReceiver<DecoratedMessage>,
     broadcast_sender: broadcast::Sender<MessageReply>,
-    behavior: Box<dyn ChannelBehavior + Sync + Send>,
+    behavior: Box<dyn ChannelBehavior>,
 }
 
 pub enum JoinError {
@@ -19,7 +19,11 @@ pub enum JoinError {
     Unknown,
 }
 
-pub trait ChannelBehavior {
+pub trait CloneChannelBehavior {
+    fn clone_box(&self) -> Box<dyn ChannelBehavior>;
+}
+
+pub trait ChannelBehavior: std::fmt::Debug + Send + Sync + CloneChannelBehavior {
     fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<Message> {
         None
     }
@@ -29,9 +33,24 @@ pub trait ChannelBehavior {
     }
 }
 
+impl<T> CloneChannelBehavior for T
+where
+    T: 'static + ChannelBehavior + Clone,
+{
+    fn clone_box(&self) -> Box<dyn ChannelBehavior> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn ChannelBehavior> {
+    fn clone(&self) -> Box<dyn ChannelBehavior> {
+        self.clone_box()
+    }
+}
+
 // FIXME: add channel id
 impl Channel {
-    pub fn new(behavior: Box<dyn ChannelBehavior + Sync + Send>) -> Self {
+    pub fn new(behavior: Box<dyn ChannelBehavior>) -> Self {
         let (incoming_sender, incoming_receiver) = unbounded_channel();
         let (broadcast_sender, _broadcast_receiver) = broadcast::channel(1024);
 
@@ -45,7 +64,7 @@ impl Channel {
 
     // FIXME: need a way to receive a shutdown message
     pub fn spawn(
-        behavior: Box<dyn ChannelBehavior + Sync + Send>,
+        behavior: Box<dyn ChannelBehavior>,
     ) -> (JoinHandle<()>, UnboundedSender<DecoratedMessage>) {
         let channel = Self::new(behavior);
         let sender = channel.incoming_sender.clone();

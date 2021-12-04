@@ -6,6 +6,7 @@ use registry::Registry;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -13,6 +14,7 @@ use tracing::{debug, error, info};
 use types::Token;
 
 use crate::message::{Message, MessageReply};
+use crate::types::ChannelId;
 
 // TODO:
 // - each socket gets a private channel; messages can be sent to that particular socket.
@@ -21,7 +23,6 @@ use crate::message::{Message, MessageReply};
 
 pub mod channel;
 pub mod message;
-pub mod pubsub;
 pub mod registry;
 pub mod types;
 
@@ -93,7 +94,7 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
 // Avoids a central message bus, instad allows sockets to more-or-less directly send messages
 // to the intended channels.
 pub struct ReaderSubscriptions {
-    channels: HashMap<String, UnboundedSender<DecoratedMessage>>,
+    channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
     token: Token,
     mailbox_tx: UnboundedSender<Message>,
 }
@@ -107,7 +108,7 @@ impl ReaderSubscriptions {
         }
     }
 
-    pub fn insert(&mut self, channel_id: String, sender: UnboundedSender<DecoratedMessage>) {
+    pub fn insert(&mut self, channel_id: ChannelId, sender: UnboundedSender<DecoratedMessage>) {
         self.channels.entry(channel_id).or_insert(sender);
     }
 }
@@ -117,7 +118,7 @@ impl Drop for ReaderSubscriptions {
         for (channel_id, sender) in &self.channels {
             sender.send(
                 Message::Leave {
-                    channel_id: channel_id.to_string(),
+                    channel_id: channel_id.clone(), // FIXME unwrap
                 }
                 .decorate(self.token, self.mailbox_tx.clone()),
             );
@@ -143,46 +144,46 @@ struct SimpleParser;
 // message | hello
 //
 impl SimpleParser {
-    pub fn from_str(input: &str) -> Result<Message, String> {
-        let mut segments = input.split("|");
-        let mut token_args = segments.next().unwrap().split_whitespace();
-
-        debug!(
-            "token_args = {:?}",
-            token_args.clone().collect::<Vec<&str>>()
-        );
-
-        let command = token_args.next();
-        let channel_id = token_args.next().or(Some("default")).unwrap().to_string();
-
-        if command.is_some() {
-            match command.unwrap() {
-                "join" | "j" => {
-                    return Ok(Message::Join { channel_id });
-                }
-                "message" | "m" | "msg" => {
-                    return Ok(Message::Channel {
-                        channel_id,
-                        text: segments.next().unwrap().to_string(),
-                    });
-                }
-                "leave" | "l" => {
-                    return Ok(Message::Leave { channel_id });
-                }
-
-                _ => {}
-            }
-        }
-
-        // in all other cases, just echo the input
-        Ok(Message::Channel {
-            channel_id,
-            text: input.to_string(),
+    pub fn from_str(input: &str) -> Result<Message, ParseError> {
+        Err(ParseError {
+            message: Some("deprecated parser".to_string()),
         })
+        // let mut segments = input.split("|");
+        // let mut token_args = segments.next().unwrap().split_whitespace();
+
+        // debug!(
+        //     "token_args = {:?}",
+        //     token_args.clone().collect::<Vec<&str>>()
+        // );
+
+        // let command = token_args.next();
+        // let channel_id = token_args.next().or(Some("default")).unwrap().to_string();
+
+        // if command.is_some() {
+        //     match command.unwrap() {
+        //         // "join" | "j" => {
+        //         //     return Ok(Message::Join { channel_id });
+        //         // }
+        //         // "message" | "m" | "msg" => {
+        //         //     return Ok(Message::Channel {
+        //         //         channel_id,
+        //         //         text: segments.next().unwrap().to_string(),
+        //         //     });
+        //         // }
+        //         // "leave" | "l" => {
+        //         //     return Ok(Message::Leave { channel_id });
+        //         // }
+        //         _ => {}
+        //     }
+        // }
+
+        // // in all other cases, just echo the input
+        // Ok(Message::Channel {
+        //     channel_id,
+        //     text: input.to_string(),
+        // })
     }
 }
-
-use serde_json::value::RawValue;
 
 // #[derive(Deserialize)]
 // struct Params<'a> {
@@ -193,28 +194,40 @@ use serde_json::value::RawValue;
 struct MessageParser;
 impl MessageParser {
     pub fn from_str(input: &str) -> Result<Message, ParseError> {
-        debug!("{}", input);
+        let value: serde_json::Value = serde_json::from_str(input).unwrap();
+
+        println!("VALUE={}", value);
+        // value[0] is unknown (yet), some sort of frame id
+        // value[1] is unknown (yet), some sort of frame id
+        let channel_id: ChannelId = value[2].as_str().unwrap().parse().unwrap();
+        let event = value[3].as_str().unwrap();
+        let payload = value[4].to_owned();
+        // let len = input.len() - 1;
+        // let inner = &input[1..len];
+        // debug!("{}", inner);
         // let (_, _, channel_id, event, raw_params) =
-        let mut split = input.splitn(5, ",");
+        // let mut split = inner.splitn(5, ",");
         // .ok_or_else(|| ParseError {
         //     message: Some("comma-separated input not provided"),
         // })?;
 
         // FIXME: what are the first two fields?
-        let _unknown_a = split.next().ok_or(ParseError { message: None })?;
-        let _unknown_b = split.next().ok_or(ParseError { message: None })?;
-        let channel_id = split.next().ok_or(ParseError { message: None })?;
-        let event = split.next().ok_or(ParseError { message: None })?;
-        let raw_params = split.next().ok_or(ParseError { message: None })?;
+        // let _unknown_a = split.next().ok_or(ParseError { message: None })?;
+        // let _unknown_b = split.next().ok_or(ParseError { message: None })?;
+        // let channel_id: ChannelId = split.next().ok_or(ParseError { message: None })?.parse()?;
+        // let event = split.next().ok_or(ParseError { message: None })?;
+        // let raw_params = split.next().ok_or(ParseError { message: None })?;
 
         match event {
-            "join" | "phx_join" => {
-                todo!()
-            }
+            "join" | "phx_join" => Ok(Message::JoinRequest { channel_id }),
             _ => todo!(),
+            // basically any other event name should be handled by the behavior
+            // _ => Ok(Message::Event { event, })
         }
     }
 }
+
+pub(crate) struct JoinRequest {}
 // reading data from remote
 async fn read(
     token: Token,
@@ -270,13 +283,24 @@ async fn read(
             {"Join":{"channel_id":"default"}}
             */
             Message::Join { channel_id } => {
-                debug!("joining token={}, channel={}", token, channel_id);
-                let mut decorated =
-                    Message::Join { channel_id }.decorate(token, conn.mailbox_tx.clone());
-                decorated.broadcast_reply_to = Some(reply_sender.clone());
+                debug!("joining token={}, channel={}", token, channel_id.id());
+                // let join_request = JoinRequest {
+                //     channel_key:
+                // };
+                //     Message::Join { channel_id }.decorate(token, conn.mailbox_tx.clone());
+                // decorated.broadcast_reply_to = Some(reply_sender.clone());
 
-                let locked = registry.lock().unwrap();
-                locked.dispatch(decorated);
+                // let locked = registry.lock().unwrap();
+                // locked.dispatch(decorated);
+            }
+            Message::JoinRequest { channel_id } => {
+                debug!(
+                    "sending JoinRequest to registry; channel_id={}",
+                    channel_id.id()
+                );
+
+                let mut locked = registry.lock().unwrap();
+                locked.handle_join_request(token, channel_id, conn.mailbox_tx.clone());
             }
             Message::DidJoin {
                 channel_id,
@@ -321,17 +345,17 @@ fn handle_write_close(token: Token, registry: Arc<Mutex<Registry>>) {
 }
 
 #[derive(Debug)]
-pub struct ParseError<'a> {
-    message: Option<&'a str>,
+pub struct ParseError {
+    message: Option<String>,
 }
 
-impl Display for ParseError<'_> {
+impl Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
     }
 }
 
-impl std::error::Error for ParseError<'_> {}
+impl std::error::Error for ParseError {}
 
 async fn write(
     token: Token,

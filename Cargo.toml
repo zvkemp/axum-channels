@@ -20,3 +20,4 @@ http = "*"
 [dev-dependencies]
 tokio-tungstenite = "*"
 tungstenite = "*"
+tracing-subscriber = "*"

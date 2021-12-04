@@ -15,19 +15,23 @@ use tokio::sync::mpsc::UnboundedSender;
 #[derive(Debug)]
 pub enum Message {
     Channel {
-        channel_id: String,
+        channel_id: ChannelId,
         text: String,
     },
     Join {
-        channel_id: String,
+        channel_id: ChannelId,
+    },
+
+    JoinRequest {
+        channel_id: ChannelId, // topic name
     },
     DidJoin {
-        channel_id: String,
+        channel_id: ChannelId,
         channel_sender: UnboundedSender<DecoratedMessage>,
         broadcast_handle: tokio::task::JoinHandle<()>,
     },
     Leave {
-        channel_id: String,
+        channel_id: ChannelId,
     },
 
     // FIXME: duplicate of MessageReply::Reply
@@ -75,6 +79,7 @@ impl DecoratedMessage {
             Message::Join { channel_id } => channel_id,
             Message::DidJoin { channel_id, .. } => channel_id,
             Message::Leave { channel_id } => channel_id,
+            Message::JoinRequest { channel_id } => channel_id,
             // FIXME: probably ok to add channel_id to these two
             Message::Reply(_) => todo!(),
             Message::Broadcast(_) => todo!(),

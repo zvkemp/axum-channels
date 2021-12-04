@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 #[derive(Hash, Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Token(usize);
 
@@ -13,4 +15,36 @@ impl From<usize> for Token {
     }
 }
 
-pub type ChannelId = String;
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
+pub struct ChannelId {
+    raw: String,
+    delimiter_idx: Option<usize>,
+}
+
+impl ChannelId {
+    pub fn key(&self) -> Option<&str> {
+        self.delimiter_idx.map(|idx| &self.raw[..idx])
+    }
+
+    pub fn id(&self) -> &str {
+        &self.raw
+    }
+}
+
+impl<'a> FromStr for ChannelId {
+    type Err = crate::ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.char_indices().find(|(_, char)| *char == ':') {
+            Some((index, _)) => Ok(ChannelId {
+                raw: s.to_string(),
+                delimiter_idx: Some(index),
+            }),
+
+            None => Ok(ChannelId {
+                raw: s.to_string(),
+                delimiter_idx: None,
+            }),
+        }
+    }
+}

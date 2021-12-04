@@ -5,11 +5,13 @@ use crate::{
 };
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::error;
 
 #[derive(Debug)]
 pub struct Registry {
     channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
     sockets: HashMap<Token, UnboundedSender<MessageReply>>,
+    behaviors: HashMap<String, Box<dyn ChannelBehavior>>,
 }
 
 impl Default for Registry {
@@ -17,16 +19,22 @@ impl Default for Registry {
         let mut channels = HashMap::new();
         let (_, default_channel) = Channel::spawn(Box::new(DefaultChannel));
         channels
-            .entry("default".to_string())
+            .entry("default:*".parse().unwrap())
             .or_insert(default_channel);
 
+        let behaviors = HashMap::new();
         let sockets = HashMap::new();
 
-        Registry { channels, sockets }
+        Registry {
+            channels,
+            sockets,
+            behaviors,
+        }
     }
 }
 
 // FIXME: move
+#[derive(Debug, Clone)]
 struct DefaultChannel;
 
 impl ChannelBehavior for DefaultChannel {
@@ -69,12 +77,33 @@ impl Registry {
             .map_err(|_| Error::Transport)
     }
 
-    // FIXME: handle errors
-    pub fn add_channel(
+    pub fn handle_join_request(
         &mut self,
+        token: Token,
         channel_id: ChannelId,
-        behavior: Box<dyn ChannelBehavior + Sync + Send>,
+        mailbox_tx: UnboundedSender<Message>,
     ) {
+        if self.channels.get(&channel_id).is_none() {
+            match self.behaviors.get(channel_id.key().unwrap()) {
+                // FIXME: no unwrap
+                Some(behavior) => {
+                    self.add_channel(channel_id.clone(), behavior.clone());
+
+                    let join_msg = Message::Join {
+                        channel_id: channel_id.clone(),
+                    }
+                    .decorate(token, mailbox_tx);
+                }
+
+                None => {
+                    error!("registered behavior not found for {:?}", channel_id);
+                }
+            }
+        }
+    }
+
+    // FIXME: handle errors
+    pub fn add_channel(&mut self, channel_id: ChannelId, behavior: Box<dyn ChannelBehavior>) {
         let (_, channel) = Channel::spawn(behavior);
         self.channels.entry(channel_id).or_insert(channel);
     }
