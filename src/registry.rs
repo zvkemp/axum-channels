@@ -5,7 +5,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::error;
+use tracing::{debug, error};
 
 #[derive(Debug)]
 pub struct Registry {
@@ -43,11 +43,23 @@ impl ChannelBehavior for DefaultChannel {
             Message::Channel { text, .. } => {
                 Some(Message::Broadcast(format!("[{}] {}", message.token, text)))
             }
+            Message::Event { event, payload, .. } => Some(Message::Broadcast(format!(
+                "[{}] <event={}> {}",
+                message.token, event, payload
+            ))),
             _ => None,
         }
     }
+
+    fn handle_join(
+        &mut self,
+        _message: &DecoratedMessage,
+    ) -> Result<(), crate::channel::JoinError> {
+        Ok(())
+    }
 }
 
+#[derive(Debug)]
 pub enum Error {
     NoChannel,
     Transport, // FIXME: use snafu?
@@ -72,7 +84,8 @@ impl Registry {
     pub fn dispatch(&self, message: DecoratedMessage) -> Result<(), Error> {
         self.channels
             .get(message.channel_id())
-            .ok_or(Error::NoChannel)?
+            .ok_or(Error::NoChannel)
+            .unwrap()
             .send(message)
             .map_err(|_| Error::Transport)
     }
@@ -82,24 +95,36 @@ impl Registry {
         token: Token,
         channel_id: ChannelId,
         mailbox_tx: UnboundedSender<Message>,
+        broadcast_reply_to: UnboundedSender<MessageReply>,
     ) {
+        println!(
+            "handle_join_request: token={}, channel_id={:?}",
+            token, channel_id
+        );
+
         if self.channels.get(&channel_id).is_none() {
             match self.behaviors.get(channel_id.key().unwrap()) {
                 // FIXME: no unwrap
                 Some(behavior) => {
                     self.add_channel(channel_id.clone(), behavior.clone());
-
-                    let join_msg = Message::Join {
-                        channel_id: channel_id.clone(),
-                    }
-                    .decorate(token, mailbox_tx);
                 }
 
                 None => {
-                    error!("registered behavior not found for {:?}", channel_id);
+                    eprintln!("registered behavior not found for {:?}", channel_id);
+                    return;
                 }
             }
         }
+
+        let mut join_msg = Message::Join {
+            channel_id: channel_id.clone(),
+        }
+        .decorate(token, mailbox_tx);
+
+        join_msg.broadcast_reply_to = Some(broadcast_reply_to);
+
+        println!("dispatching {:?}", join_msg);
+        self.dispatch(join_msg).unwrap();
     }
 
     // FIXME: handle errors

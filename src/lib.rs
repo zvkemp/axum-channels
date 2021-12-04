@@ -194,9 +194,10 @@ impl SimpleParser {
 struct MessageParser;
 impl MessageParser {
     pub fn from_str(input: &str) -> Result<Message, ParseError> {
+        println!("INPUT={}", input);
         let value: serde_json::Value = serde_json::from_str(input).unwrap();
-
         println!("VALUE={}", value);
+
         // value[0] is unknown (yet), some sort of frame id
         // value[1] is unknown (yet), some sort of frame id
         let channel_id: ChannelId = value[2].as_str().unwrap().parse().unwrap();
@@ -220,9 +221,12 @@ impl MessageParser {
 
         match event {
             "join" | "phx_join" => Ok(Message::JoinRequest { channel_id }),
-            _ => todo!(),
             // basically any other event name should be handled by the behavior
-            // _ => Ok(Message::Event { event, })
+            _ => Ok(Message::Event {
+                channel_id,
+                event: event.to_string(),
+                payload,
+            }),
         }
     }
 }
@@ -253,6 +257,7 @@ async fn read(
                         // FIXME: eep
                         let msg: Result<Message, _> = parse_message(&inner, &format);
 
+                        debug!("message parsed; {:?}", msg);
                         match msg {
                             Ok(msg) => mailbox_tx.send(msg).unwrap(),
                             Err(e) => {
@@ -300,7 +305,12 @@ async fn read(
                 );
 
                 let mut locked = registry.lock().unwrap();
-                locked.handle_join_request(token, channel_id, conn.mailbox_tx.clone());
+                locked.handle_join_request(
+                    token,
+                    channel_id,
+                    conn.mailbox_tx.clone(),
+                    reply_sender.clone(),
+                );
             }
             Message::DidJoin {
                 channel_id,
@@ -329,6 +339,23 @@ async fn read(
 
             Message::Broadcast(_) => {
                 todo!() // This probably shouldn't be sent here
+            }
+
+            Message::Event {
+                channel_id,
+                event,
+                payload,
+            } => {
+                if let Some(tx) = subscriptions.channels.get(&channel_id) {
+                    tx.send(
+                        Message::Event {
+                            channel_id,
+                            event,
+                            payload,
+                        }
+                        .decorate(token, conn.mailbox_tx.clone()),
+                    );
+                }
             }
         }
     }

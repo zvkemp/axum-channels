@@ -149,7 +149,10 @@ impl Channel {
                     )))
                     .unwrap(); // FIXME
             }
-            _ => todo!("handle errors; this should not happen"),
+            _ => {
+                eprintln!("unexpected={:?}", message);
+                todo!("handle errors; this should not happen");
+            }
         }
     }
 

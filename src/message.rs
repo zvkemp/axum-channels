@@ -34,6 +34,12 @@ pub enum Message {
         channel_id: ChannelId,
     },
 
+    Event {
+        channel_id: ChannelId,
+        event: String,
+        payload: serde_json::Value,
+    },
+
     // FIXME: duplicate of MessageReply::Reply
     Reply(String),
     Broadcast(String),
@@ -83,6 +89,7 @@ impl DecoratedMessage {
             // FIXME: probably ok to add channel_id to these two
             Message::Reply(_) => todo!(),
             Message::Broadcast(_) => todo!(),
+            Message::Event { channel_id, .. } => channel_id,
         }
     }
 }
