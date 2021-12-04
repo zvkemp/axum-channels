@@ -3,11 +3,13 @@ use futures::sink::SinkExt;
 use futures::stream::{SplitSink, SplitStream, StreamExt};
 use message::DecoratedMessage;
 use registry::Registry;
+use serde::Deserialize;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use types::Token;
 
 use crate::message::{Message, MessageReply};
@@ -19,6 +21,7 @@ use crate::message::{Message, MessageReply};
 
 pub mod channel;
 pub mod message;
+pub mod pubsub;
 pub mod registry;
 pub mod types;
 
@@ -29,6 +32,7 @@ pub struct Conn {
     format: ConnFormat,
     mailbox_tx: UnboundedSender<Message>,
     mailbox_rx: UnboundedReceiver<Message>,
+    extensions: http::Extensions,
 }
 
 // channel responses should be:
@@ -46,10 +50,13 @@ pub struct Conn {
 
 // FIXME: this is more or less for testing purposes; the endpoint selected
 // will establish which serialization format will be used for the client.
+// 'message' format is similar to Phoenix socketry, where the event name is accompanied by a json payload,
+// e.g. join,{ "token": "foo" }
 #[derive(Debug, Clone, Copy)]
 pub enum ConnFormat {
     JSON,
     Simple,
+    Message,
 }
 
 fn get_token() -> Token {
@@ -68,6 +75,7 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
         mailbox_tx,
         mailbox_rx,
         format,
+        extensions: Default::default(),
     };
 
     tokio::spawn(write(
@@ -118,13 +126,14 @@ impl Drop for ReaderSubscriptions {
 }
 
 // FIXME: should be temporary?
-fn parse_message(
-    message: &str,
+fn parse_message<'a>(
+    message: &'a str,
     format: &ConnFormat,
-) -> Result<Message, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Message, Box<dyn std::error::Error + Send + Sync + 'a>> {
     match format {
         &ConnFormat::JSON => todo!(), // serde_json::from_str(message).map_err(Into::into),
         &ConnFormat::Simple => SimpleParser::from_str(message).map_err(Into::into),
+        &ConnFormat::Message => MessageParser::from_str(message).map_err(Into::into),
     }
 }
 
@@ -172,6 +181,40 @@ impl SimpleParser {
         })
     }
 }
+
+use serde_json::value::RawValue;
+
+// #[derive(Deserialize)]
+// struct Params<'a> {
+//     #[serde(borrow)]
+//     raw_value: &'a RawValue,
+// }
+
+struct MessageParser;
+impl MessageParser {
+    pub fn from_str(input: &str) -> Result<Message, ParseError> {
+        debug!("{}", input);
+        // let (_, _, channel_id, event, raw_params) =
+        let mut split = input.splitn(5, ",");
+        // .ok_or_else(|| ParseError {
+        //     message: Some("comma-separated input not provided"),
+        // })?;
+
+        // FIXME: what are the first two fields?
+        let _unknown_a = split.next().ok_or(ParseError { message: None })?;
+        let _unknown_b = split.next().ok_or(ParseError { message: None })?;
+        let channel_id = split.next().ok_or(ParseError { message: None })?;
+        let event = split.next().ok_or(ParseError { message: None })?;
+        let raw_params = split.next().ok_or(ParseError { message: None })?;
+
+        match event {
+            "join" | "phx_join" => {
+                todo!()
+            }
+            _ => todo!(),
+        }
+    }
+}
 // reading data from remote
 async fn read(
     token: Token,
@@ -190,6 +233,7 @@ async fn read(
     // this task maps ws::Message to Message and sends them to mailbox_tx
     let _ws_handle = tokio::spawn(async move {
         while let Some(msg) = ws_receiver.next().await {
+            info!("{:?}", msg);
             match msg {
                 Ok(inner) => match inner {
                     ws::Message::Text(inner) => {
@@ -275,6 +319,19 @@ fn handle_write_close(token: Token, registry: Arc<Mutex<Registry>>) {
 
     registry.lock().unwrap().deregister_writer(token);
 }
+
+#[derive(Debug)]
+pub struct ParseError<'a> {
+    message: Option<&'a str>,
+}
+
+impl Display for ParseError<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for ParseError<'_> {}
 
 async fn write(
     token: Token,

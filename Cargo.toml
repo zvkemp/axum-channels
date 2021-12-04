@@ -15,6 +15,7 @@ tokio = { version = "*", features = ["full"] }
 tokio-stream = { version = "*", features = ["sync"] }
 tokio-util = "*"
 tracing = "*"
+http = "*"
 
 [dev-dependencies]
 tokio-tungstenite = "*"

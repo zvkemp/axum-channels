@@ -102,6 +102,8 @@ impl Channel {
     // FIXME: join should be a fallible operation (e.g. allow for Authorization).
     // The volume of join requests would probably be sufficient to have everything go
     // through the locked Registry mutex, though it would be nice not to have to.
+    // FIXME: avoid duplicate subscriptions
+    // FIXME: add user presence tracking
     fn handle_join(&self, message: DecoratedMessage) -> () {
         match message {
             DecoratedMessage {
