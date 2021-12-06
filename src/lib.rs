@@ -196,32 +196,14 @@ impl SimpleParser {
 struct MessageParser;
 impl MessageParser {
     pub fn from_str(input: &str) -> Result<Message, ParseError> {
-        println!("INPUT={}", input);
         let value: serde_json::Value = serde_json::from_str(input).unwrap();
-        println!("VALUE={}", value);
 
         let _join_ref = value[0].as_str();
         let msg_ref = value[1].as_str().unwrap().to_string();
 
-        println!("msg_ref={}", msg_ref);
         let channel_id: ChannelId = value[2].as_str().unwrap().parse().unwrap();
         let event = value[3].as_str().unwrap();
         let payload = value[4].to_owned();
-        // let len = input.len() - 1;
-        // let inner = &input[1..len];
-        // debug!("{}", inner);
-        // let (_, _, channel_id, event, raw_params) =
-        // let mut split = inner.splitn(5, ",");
-        // .ok_or_else(|| ParseError {
-        //     message: Some("comma-separated input not provided"),
-        // })?;
-
-        // FIXME: what are the first two fields?
-        // let _unknown_a = split.next().ok_or(ParseError { message: None })?;
-        // let _unknown_b = split.next().ok_or(ParseError { message: None })?;
-        // let channel_id: ChannelId = split.next().ok_or(ParseError { message: None })?.parse()?;
-        // let event = split.next().ok_or(ParseError { message: None })?;
-        // let raw_params = split.next().ok_or(ParseError { message: None })?;
 
         match event {
             "join" | "phx_join" => Ok(Message::JoinRequest {
@@ -358,7 +340,7 @@ async fn read(
                 reply_sender.send(MessageReply::Reply(text));
             }
 
-            Message::Broadcast(_) => {
+            Message::Broadcast { .. } => {
                 todo!() // This probably shouldn't be sent here
             }
 

@@ -43,7 +43,11 @@ pub enum Message {
     },
     // FIXME: duplicate of MessageReply::Reply
     Reply(String),
-    Broadcast(String),
+    Broadcast {
+        channel_id: ChannelId,
+        event: String,
+        payload: serde_json::Value,
+    },
     Heartbeat {
         msg_ref: String,
     },
@@ -98,7 +102,7 @@ impl DecoratedMessage {
             Message::JoinRequest { channel_id, .. } => channel_id,
             // FIXME: probably ok to add channel_id to these two
             Message::Reply(_) => todo!(),
-            Message::Broadcast(_) => todo!(),
+            Message::Broadcast { channel_id, .. } => channel_id,
             Message::Event { channel_id, .. } => channel_id,
             Message::Heartbeat { .. } => &PHX_CHANNEL,
         }
@@ -108,7 +112,11 @@ impl DecoratedMessage {
 #[derive(Debug, Clone)]
 pub enum MessageReply {
     Reply(String),
-    Broadcast(String),
+    Broadcast {
+        event: String,
+        payload: serde_json::Value,
+        channel_id: ChannelId,
+    },
     Pong(Vec<u8>),
     Event {
         event: String,
@@ -130,7 +138,7 @@ impl MessageReply {
     }
 
     pub fn is_broadcast(&self) -> bool {
-        matches!(self, MessageReply::Broadcast(..))
+        matches!(self, MessageReply::Broadcast { .. })
     }
 }
 
@@ -138,7 +146,14 @@ impl From<MessageReply> for ws::Message {
     fn from(msg: MessageReply) -> Self {
         match msg {
             MessageReply::Reply(text) => ws::Message::Text(text),
-            MessageReply::Broadcast(text) => ws::Message::Text(text),
+            MessageReply::Broadcast {
+                event,
+                payload,
+                channel_id,
+            } => {
+                let json_value = json!([null, null, channel_id.id(), event, payload]);
+                ws::Message::Text(serde_json::to_string(&json_value).unwrap())
+            }
             MessageReply::Pong(data) => ws::Message::Pong(data),
             MessageReply::Heartbeat { msg_ref } => {
                 // FIXME: msg_ref is escape-quoted; needs to be just "8" instead of "\"8\""

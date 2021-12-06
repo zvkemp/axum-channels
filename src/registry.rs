@@ -40,13 +40,14 @@ struct DefaultChannel;
 impl ChannelBehavior for DefaultChannel {
     fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
         match &message.inner {
-            Message::Channel { text, .. } => {
-                Some(Message::Broadcast(format!("[{}] {}", message.token, text)))
-            }
-            Message::Event { event, payload, .. } => Some(Message::Broadcast(format!(
-                "[{}] <event={}> {}",
-                message.token, event, payload
-            ))),
+            // Message::Channel { text, .. } => {
+            //     Some(Message::Broadcast(format!("[{}] {}", message.token, text)))
+            // }
+            Message::Event { event, payload, .. } => Some(Message::Broadcast {
+                event: event.to_string(),
+                payload: payload.clone(),
+                channel_id: message.channel_id().clone(),
+            }),
             _ => None,
         }
     }

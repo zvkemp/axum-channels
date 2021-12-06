@@ -101,10 +101,17 @@ impl Channel {
                                 };
                             }
                         }
-                        Some(Message::Broadcast(msg)) => {
+                        Some(Message::Broadcast {
+                            channel_id,
+                            event,
+                            payload,
+                        }) => {
                             debug!("broadcasting...");
-                            if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast(msg))
-                            {
+                            if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast {
+                                channel_id,
+                                event,
+                                payload,
+                            }) {
                                 error!("unexpected error in broadcast; err={:?}", e);
                             };
                         }
@@ -160,12 +167,12 @@ impl Channel {
     // FIXME: also pass this to behavior?
     // Some behaviors may want to set presence
     fn handle_leave(&self, message: DecoratedMessage) -> () {
-        self.broadcast_sender
-            .send(MessageReply::Broadcast(format!(
-                "socket {} left the channel. Goodbye!",
-                message.token
-            )))
-            .unwrap();
+        // self.broadcast_sender
+        //     .send(MessageReply::Broadcast(format!(
+        //         "socket {} left the channel. Goodbye!",
+        //         message.token
+        //     )))
+        //     .unwrap();
     }
 
     // FIXME: what should this look like?
