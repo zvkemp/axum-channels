@@ -72,12 +72,14 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
 
     let (mailbox_tx, mailbox_rx) = unbounded_channel();
 
-    let conn = Conn {
+    let mut conn = Conn {
         mailbox_tx,
         mailbox_rx,
         format,
         extensions: Default::default(),
     };
+
+    conn.extensions.insert(token);
 
     tokio::spawn(write(
         token,
@@ -198,8 +200,10 @@ impl MessageParser {
         let value: serde_json::Value = serde_json::from_str(input).unwrap();
         println!("VALUE={}", value);
 
-        // value[0] is unknown (yet), some sort of frame id
-        // value[1] is unknown (yet), some sort of frame id
+        let _join_ref = value[0].as_str();
+        let msg_ref = value[1].as_str().unwrap().to_string();
+
+        println!("msg_ref={}", msg_ref);
         let channel_id: ChannelId = value[2].as_str().unwrap().parse().unwrap();
         let event = value[3].as_str().unwrap();
         let payload = value[4].to_owned();
@@ -220,9 +224,14 @@ impl MessageParser {
         // let raw_params = split.next().ok_or(ParseError { message: None })?;
 
         match event {
-            "join" | "phx_join" => Ok(Message::JoinRequest { channel_id }),
+            "join" | "phx_join" => Ok(Message::JoinRequest {
+                channel_id,
+                msg_ref,
+            }),
+            "heartbeat" => Ok(Message::Heartbeat { msg_ref }),
             // basically any other event name should be handled by the behavior
             _ => Ok(Message::Event {
+                msg_ref,
                 channel_id,
                 event: event.to_string(),
                 payload,
@@ -298,7 +307,10 @@ async fn read(
                 // let locked = registry.lock().unwrap();
                 // locked.dispatch(decorated);
             }
-            Message::JoinRequest { channel_id } => {
+            Message::JoinRequest {
+                channel_id,
+                msg_ref,
+            } => {
                 debug!(
                     "sending JoinRequest to registry; channel_id={}",
                     channel_id.id()
@@ -310,11 +322,13 @@ async fn read(
                     channel_id,
                     conn.mailbox_tx.clone(),
                     reply_sender.clone(),
+                    msg_ref,
                 );
             }
             Message::DidJoin {
                 channel_id,
                 channel_sender,
+                msg_ref,
                 ..
             } => {
                 debug!("received join confirmation");
@@ -322,6 +336,13 @@ async fn read(
                     .channels
                     .entry(channel_id.clone())
                     .or_insert(channel_sender);
+
+                reply_sender
+                    .send(MessageReply::Join {
+                        channel_id,
+                        msg_ref,
+                    })
+                    .unwrap();
             }
 
             Message::Channel { channel_id, text } => {
@@ -345,6 +366,7 @@ async fn read(
                 channel_id,
                 event,
                 payload,
+                msg_ref,
             } => {
                 if let Some(tx) = subscriptions.channels.get(&channel_id) {
                     tx.send(
@@ -352,10 +374,17 @@ async fn read(
                             channel_id,
                             event,
                             payload,
+                            msg_ref,
                         }
                         .decorate(token, conn.mailbox_tx.clone()),
                     );
                 }
+            }
+
+            Message::Heartbeat { msg_ref } => {
+                reply_sender
+                    .send(MessageReply::Heartbeat { msg_ref })
+                    .unwrap();
             }
         }
     }

@@ -132,6 +132,7 @@ impl Channel {
                 ..
             } => {
                 tx.send(Message::DidJoin {
+                    msg_ref: message.msg_ref.unwrap(),
                     channel_id,
                     channel_sender: self.incoming_sender.clone(),
                     // FIXME: spawn the task here
@@ -140,14 +141,14 @@ impl Channel {
                         self.broadcast_sender.subscribe(),
                     ),
                 })
-                .unwrap(); // FIXME: unwrap
+                .unwrap();
 
-                self.broadcast_sender
-                    .send(MessageReply::Broadcast(format!(
-                        "socket {} joined the channel. Welcome!",
-                        message.token
-                    )))
-                    .unwrap(); // FIXME
+                // self.broadcast_sender
+                //     .send(MessageReply::Broadcast(format!(
+                //         "socket {} joined the channel. Welcome!",
+                //         message.token
+                //     )))
+                //     .unwrap(); // FIXME
             }
             _ => {
                 eprintln!("unexpected={:?}", message);

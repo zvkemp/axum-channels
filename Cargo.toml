@@ -16,6 +16,7 @@ tokio-stream = { version = "*", features = ["sync"] }
 tokio-util = "*"
 tracing = "*"
 http = "*"
+lazy_static = "*"
 
 [dev-dependencies]
 tokio-tungstenite = "*"

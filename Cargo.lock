@@ -67,6 +67,7 @@ dependencies = [
  "axum",
  "futures",
  "http",
+ "lazy_static",
  "serde",
  "serde_json",
  "tokio",

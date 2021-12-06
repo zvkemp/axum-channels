@@ -71,12 +71,19 @@ pub enum Error {
 impl Registry {
     // the write half of the socket is connected to the receiver, and the sender here will handle
     // channel subscriptions
+    // FIXME: these are probably no longer necessary, can remove the sockets attribute entirely
+    #[deprecated]
     pub fn register_writer(&mut self, token: Token, sender: UnboundedSender<MessageReply>) {
         self.sockets.entry(token).or_insert(sender); // this will be a way to communicate with sockets
     }
 
+    #[deprecated]
     pub fn deregister_writer(&mut self, token: Token) {
         self.sockets.remove(&token);
+    }
+
+    pub fn register_behavior(&mut self, key: String, behavior: Box<dyn ChannelBehavior>) {
+        self.behaviors.entry(key).or_insert(behavior);
     }
 
     /// Send a message to a channel. Because the reigstry is typically behind a mutex,
@@ -96,6 +103,7 @@ impl Registry {
         channel_id: ChannelId,
         mailbox_tx: UnboundedSender<Message>,
         broadcast_reply_to: UnboundedSender<MessageReply>,
+        msg_ref: String,
     ) {
         println!(
             "handle_join_request: token={}, channel_id={:?}",
@@ -122,6 +130,7 @@ impl Registry {
         .decorate(token, mailbox_tx);
 
         join_msg.broadcast_reply_to = Some(broadcast_reply_to);
+        join_msg.msg_ref = Some(msg_ref);
 
         println!("dispatching {:?}", join_msg);
         self.dispatch(join_msg).unwrap();
