@@ -3,16 +3,20 @@ use axum::extract::ws;
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 
-// FIXME: should be something more like:
-// pub enum Event {
-//   JoinRequest
-//   JoinResult
-//   LeaveRequest
-//   LeaveResult
-//   Message
-//   PutData/Assign/Remove/etc
-// }
+pub enum MessageKind {
+    Channel,
+    Join,
+    JoinRequest,
+    DidJoin,
+    Leave,
+    Event(String),
+    Broadcast,
+    Heartbeat,
+    BroadcastIntercept,
+    Push,
+}
 
+// FIXME: this is getting silly; it's probably type to split of MessageKind, and standardize the other fields
 #[derive(Debug)]
 pub enum Message {
     Channel {
@@ -51,6 +55,17 @@ pub enum Message {
     Heartbeat {
         msg_ref: String,
     },
+    BroadcastIntercept {
+        channel_id: ChannelId,
+        event: String,
+        payload: serde_json::Value,
+    },
+
+    Push {
+        channel_id: ChannelId,
+        event: String,
+        payload: serde_json::Value,
+    }, // Push FIXME: add this variant; message that is sent to one websocket, but not as a specific reply
 }
 
 impl Message {
@@ -93,6 +108,10 @@ impl DecoratedMessage {
         matches!(self.inner, Message::Leave { .. })
     }
 
+    pub fn is_intercept(&self) -> bool {
+        matches!(self.inner, Message::BroadcastIntercept { .. })
+    }
+
     pub fn channel_id(&self) -> &ChannelId {
         match &self.inner {
             Message::Channel { channel_id, .. } => channel_id,
@@ -105,6 +124,8 @@ impl DecoratedMessage {
             Message::Broadcast { channel_id, .. } => channel_id,
             Message::Event { channel_id, .. } => channel_id,
             Message::Heartbeat { .. } => &PHX_CHANNEL,
+            Message::BroadcastIntercept { channel_id, .. } => channel_id,
+            Message::Push { channel_id, .. } => channel_id,
         }
     }
 }
@@ -129,6 +150,16 @@ pub enum MessageReply {
     Join {
         msg_ref: String,
         channel_id: ChannelId,
+    },
+    BroadcastIntercept {
+        channel_id: ChannelId,
+        event: String,
+        payload: serde_json::Value,
+    },
+    Push {
+        channel_id: ChannelId,
+        event: String,
+        payload: serde_json::Value,
     },
 }
 
@@ -172,9 +203,18 @@ impl From<MessageReply> for ws::Message {
                 event,
                 payload,
                 channel_id,
+            }
+            | MessageReply::Push {
+                event,
+                payload,
+                channel_id,
             } => {
                 let json_value = json!([null, null, channel_id.id(), event, payload]);
                 ws::Message::Text(serde_json::to_string(&json_value).unwrap())
+            }
+            MessageReply::BroadcastIntercept { .. } => {
+                todo!()
+                // FIXME: this should never happen
             }
         }
     }

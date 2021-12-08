@@ -368,6 +368,24 @@ async fn read(
                     .send(MessageReply::Heartbeat { msg_ref })
                     .unwrap();
             }
+
+            Message::Push {
+                channel_id,
+                event,
+                payload,
+            } => reply_sender
+                .send(MessageReply::Push {
+                    channel_id,
+                    event,
+                    payload,
+                })
+                .unwrap(),
+
+            Message::BroadcastIntercept { ref channel_id, .. } => {
+                if let Some(tx) = subscriptions.channels.get(&channel_id) {
+                    tx.send(msg.decorate(token, conn.mailbox_tx.clone()));
+                }
+            }
         }
     }
 }

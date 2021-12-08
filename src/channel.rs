@@ -28,6 +28,12 @@ pub trait ChannelBehavior: std::fmt::Debug + Send + Sync + CloneChannelBehavior 
         None
     }
 
+    // receives a BroadcastIntercept for socket-specific processing
+    fn handle_out(&mut self, _message: &DecoratedMessage) -> Option<Message> {
+        None
+    }
+
+    // authorize new socket connections
     fn handle_join(&mut self, _message: &DecoratedMessage) -> Result<(), JoinError> {
         Ok(())
     }
@@ -88,6 +94,46 @@ impl Channel {
                         .and_then(|_| Ok(self.handle_join(message)));
                 } else if message.is_leave() {
                     self.handle_leave(message);
+                } else if message.is_intercept() {
+                    // FIXME: lots of duplicate logic here
+                    match self.behavior.handle_out(&message) {
+                        None => {
+                            debug!("got MessageReply::None");
+                        }
+                        Some(Message::Reply(inner)) => {
+                            if let Some(reply_to) = message.reply_to {
+                                debug!("sending reply...");
+                                if let Err(e) = reply_to.send(Message::Reply(inner)) {
+                                    error!("unexpected error in reply; error={:?}", e);
+                                };
+                            }
+                        }
+                        Some(Message::Broadcast {
+                            channel_id,
+                            event,
+                            payload,
+                        }) => {
+                            debug!("broadcasting...");
+                            if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast {
+                                channel_id,
+                                event,
+                                payload,
+                            }) {
+                                error!("unexpected error in broadcast; err={:?}", e);
+                            };
+                        }
+
+                        // These are re-sent to the sockets' inboxes, so the channel behavior can modify the response before push
+                        Some(Message::BroadcastIntercept {
+                            channel_id,
+                            event,
+                            payload,
+                        }) => {}
+
+                        _ => {
+                            todo!()
+                        }
+                    }
                 } else {
                     match self.behavior.handle_message(&message) {
                         None => {
@@ -116,6 +162,13 @@ impl Channel {
                             };
                         }
 
+                        // These are re-sent to the sockets' inboxes, so the channel behavior can modify the response before push
+                        Some(Message::BroadcastIntercept {
+                            channel_id,
+                            event,
+                            payload,
+                        }) => {}
+
                         _ => {
                             todo!()
                         }
@@ -125,7 +178,6 @@ impl Channel {
         })
     }
 
-    // FIXME: join should be a fallible operation (e.g. allow for Authorization).
     // The volume of join requests would probably be sufficient to have everything go
     // through the locked Registry mutex, though it would be nice not to have to.
     // FIXME: avoid duplicate subscriptions
@@ -145,6 +197,7 @@ impl Channel {
                     // FIXME: spawn the task here
                     broadcast_handle: spawn_broadcast_subscriber(
                         broadcast_reply_to,
+                        tx.clone(),
                         self.broadcast_sender.subscribe(),
                     ),
                 })
@@ -184,6 +237,7 @@ impl Channel {
 
 fn spawn_broadcast_subscriber(
     socket_sender: UnboundedSender<MessageReply>,
+    mailbox_sender: UnboundedSender<Message>,
     mut broadcast: broadcast::Receiver<MessageReply>,
 ) -> JoinHandle<()> {
     // This would work for a Sender, but not UnboundedSender
@@ -191,7 +245,24 @@ fn spawn_broadcast_subscriber(
 
     tokio::spawn(async move {
         while let Ok(msg_reply) = broadcast.recv().await {
-            socket_sender.send(msg_reply);
+            if let MessageReply::BroadcastIntercept {
+                channel_id,
+                event,
+                payload,
+            } = msg_reply
+            {
+                // send Intercepts back to the individual sockets for further processing
+                mailbox_sender
+                    .send(Message::BroadcastIntercept {
+                        channel_id,
+                        event,
+                        payload,
+                    })
+                    .unwrap()
+            } else {
+                // Other messages get sent directly to the websocket writer
+                socket_sender.send(msg_reply);
+            }
         }
     })
 }

@@ -5,59 +5,13 @@ use crate::{
 };
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Registry {
     channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
     sockets: HashMap<Token, UnboundedSender<MessageReply>>,
     behaviors: HashMap<String, Box<dyn ChannelBehavior>>,
-}
-
-impl Default for Registry {
-    fn default() -> Self {
-        let mut channels = HashMap::new();
-        let (_, default_channel) = Channel::spawn(Box::new(DefaultChannel));
-        channels
-            .entry("default:*".parse().unwrap())
-            .or_insert(default_channel);
-
-        let behaviors = HashMap::new();
-        let sockets = HashMap::new();
-
-        Registry {
-            channels,
-            sockets,
-            behaviors,
-        }
-    }
-}
-
-// FIXME: move
-#[derive(Debug, Clone)]
-struct DefaultChannel;
-
-impl ChannelBehavior for DefaultChannel {
-    fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
-        match &message.inner {
-            // Message::Channel { text, .. } => {
-            //     Some(Message::Broadcast(format!("[{}] {}", message.token, text)))
-            // }
-            Message::Event { event, payload, .. } => Some(Message::Broadcast {
-                event: event.to_string(),
-                payload: payload.clone(),
-                channel_id: message.channel_id().clone(),
-            }),
-            _ => None,
-        }
-    }
-
-    fn handle_join(
-        &mut self,
-        _message: &DecoratedMessage,
-    ) -> Result<(), crate::channel::JoinError> {
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -106,7 +60,7 @@ impl Registry {
         broadcast_reply_to: UnboundedSender<MessageReply>,
         msg_ref: String,
     ) {
-        println!(
+        info!(
             "handle_join_request: token={}, channel_id={:?}",
             token, channel_id
         );
