@@ -1,6 +1,6 @@
 use crate::{
     channel::{Channel, ChannelBehavior},
-    message::{DecoratedMessage, Message, MessageReply},
+    message::{DecoratedMessage, Message, MessageKind, MessageReply},
     types::{ChannelId, Token},
 };
 use std::collections::HashMap;
@@ -79,8 +79,14 @@ impl Registry {
             }
         }
 
-        let mut join_msg = Message::Join {
+        let mut join_msg = Message {
+            kind: MessageKind::Join,
             channel_id: channel_id.clone(),
+            msg_ref: Some(msg_ref.clone()),
+            join_ref: None,
+            payload: serde_json::json!(null),
+            event: "phx_join".to_string(),
+            channel_sender: None,
         }
         .decorate(token, mailbox_tx);
 

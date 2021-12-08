@@ -1,7 +1,7 @@
 use axum::extract::ws::{self, CloseFrame, WebSocket};
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, SplitStream, StreamExt};
-use message::DecoratedMessage;
+use message::{DecoratedMessage, MessageKind};
 use registry::Registry;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -55,9 +55,7 @@ pub struct Conn {
 // e.g. join,{ "token": "foo" }
 #[derive(Debug, Clone, Copy)]
 pub enum ConnFormat {
-    JSON,
-    Simple,
-    Message,
+    Phoenix,
 }
 
 fn get_token() -> Token {
@@ -119,8 +117,14 @@ impl Drop for ReaderSubscriptions {
     fn drop(&mut self) {
         for (channel_id, sender) in &self.channels {
             sender.send(
-                Message::Leave {
-                    channel_id: channel_id.clone(), // FIXME unwrap
+                Message {
+                    kind: MessageKind::Leave,
+                    channel_id: channel_id.clone(),
+                    channel_sender: None,
+                    event: "phx_leave".into(),
+                    join_ref: None,
+                    msg_ref: None,
+                    payload: Default::default(),
                 }
                 .decorate(self.token, self.mailbox_tx.clone()),
             );
@@ -134,95 +138,41 @@ fn parse_message<'a>(
     format: &ConnFormat,
 ) -> Result<Message, Box<dyn std::error::Error + Send + Sync + 'a>> {
     match format {
-        &ConnFormat::JSON => todo!(), // serde_json::from_str(message).map_err(Into::into),
-        &ConnFormat::Simple => SimpleParser::from_str(message).map_err(Into::into),
-        &ConnFormat::Message => MessageParser::from_str(message).map_err(Into::into),
+        &ConnFormat::Phoenix => PhoenixParser::from_str(message).map_err(Into::into),
     }
 }
 
-struct SimpleParser;
+struct PhoenixParser;
 
-// join default
-// message | hello
-//
-impl SimpleParser {
-    pub fn from_str(input: &str) -> Result<Message, ParseError> {
-        Err(ParseError {
-            message: Some("deprecated parser".to_string()),
-        })
-        // let mut segments = input.split("|");
-        // let mut token_args = segments.next().unwrap().split_whitespace();
-
-        // debug!(
-        //     "token_args = {:?}",
-        //     token_args.clone().collect::<Vec<&str>>()
-        // );
-
-        // let command = token_args.next();
-        // let channel_id = token_args.next().or(Some("default")).unwrap().to_string();
-
-        // if command.is_some() {
-        //     match command.unwrap() {
-        //         // "join" | "j" => {
-        //         //     return Ok(Message::Join { channel_id });
-        //         // }
-        //         // "message" | "m" | "msg" => {
-        //         //     return Ok(Message::Channel {
-        //         //         channel_id,
-        //         //         text: segments.next().unwrap().to_string(),
-        //         //     });
-        //         // }
-        //         // "leave" | "l" => {
-        //         //     return Ok(Message::Leave { channel_id });
-        //         // }
-        //         _ => {}
-        //     }
-        // }
-
-        // // in all other cases, just echo the input
-        // Ok(Message::Channel {
-        //     channel_id,
-        //     text: input.to_string(),
-        // })
-    }
-}
-
-// #[derive(Deserialize)]
-// struct Params<'a> {
-//     #[serde(borrow)]
-//     raw_value: &'a RawValue,
-// }
-
-struct MessageParser;
-impl MessageParser {
+impl PhoenixParser {
     pub fn from_str(input: &str) -> Result<Message, ParseError> {
         let value: serde_json::Value = serde_json::from_str(input).unwrap();
 
-        let _join_ref = value[0].as_str();
-        let msg_ref = value[1].as_str().unwrap().to_string();
+        let join_ref = value[0].as_str().map(Into::into);
+        let msg_ref = value[1].as_str().map(Into::into);
 
         let channel_id: ChannelId = value[2].as_str().unwrap().parse().unwrap();
-        let event = value[3].as_str().unwrap();
+        let event = value[3].as_str().unwrap().to_string();
         let payload = value[4].to_owned();
 
-        match event {
-            "join" | "phx_join" => Ok(Message::JoinRequest {
-                channel_id,
-                msg_ref,
-            }),
-            "heartbeat" => Ok(Message::Heartbeat { msg_ref }),
-            // basically any other event name should be handled by the behavior
-            _ => Ok(Message::Event {
-                msg_ref,
-                channel_id,
-                event: event.to_string(),
-                payload,
-            }),
-        }
+        let kind = match event.as_str() {
+            "join" | "phx_join" => MessageKind::JoinRequest,
+            "heartbeat" => MessageKind::Heartbeat,
+            _ => MessageKind::Event,
+        };
+
+        Ok(Message {
+            kind,
+            join_ref,
+            msg_ref,
+            channel_id,
+            event,
+            payload,
+            channel_sender: None,
+        })
     }
 }
 
-pub(crate) struct JoinRequest {}
 // reading data from remote
 async fn read(
     token: Token,
@@ -274,117 +224,73 @@ async fn read(
     });
 
     while let Some(msg) = conn.mailbox_rx.recv().await {
-        match msg {
-            /*
-            {"Join":{"channel_id":"default"}}
-            */
-            Message::Join { channel_id } => {
-                debug!("joining token={}, channel={}", token, channel_id.id());
-                // let join_request = JoinRequest {
-                //     channel_key:
-                // };
-                //     Message::Join { channel_id }.decorate(token, conn.mailbox_tx.clone());
-                // decorated.broadcast_reply_to = Some(reply_sender.clone());
-
-                // let locked = registry.lock().unwrap();
-                // locked.dispatch(decorated);
+        match &msg.kind {
+            // FIXME: drop this variant?
+            MessageKind::Join => {
+                debug!("joining token={}, channel={}", token, msg.channel_id.id());
             }
-            Message::JoinRequest {
-                channel_id,
-                msg_ref,
-            } => {
+            MessageKind::JoinRequest => {
                 debug!(
                     "sending JoinRequest to registry; channel_id={}",
-                    channel_id.id()
+                    msg.channel_id.id()
                 );
 
                 let mut locked = registry.lock().unwrap();
                 locked.handle_join_request(
                     token,
-                    channel_id,
+                    msg.channel_id,
                     conn.mailbox_tx.clone(),
                     reply_sender.clone(),
-                    msg_ref,
+                    msg.msg_ref.unwrap(),
                 );
             }
-            Message::DidJoin {
-                channel_id,
-                channel_sender,
-                msg_ref,
-                ..
-            } => {
+            MessageKind::DidJoin => {
                 debug!("received join confirmation");
                 subscriptions
                     .channels
-                    .entry(channel_id.clone())
-                    .or_insert(channel_sender);
+                    .entry(msg.channel_id.clone())
+                    .or_insert(msg.channel_sender.unwrap());
 
                 reply_sender
                     .send(MessageReply::Join {
-                        channel_id,
-                        msg_ref,
+                        channel_id: msg.channel_id,
+                        msg_ref: msg.msg_ref.unwrap(),
                     })
                     .unwrap();
             }
 
-            Message::Channel { channel_id, text } => {
-                if let Some(tx) = subscriptions.channels.get(&channel_id) {
-                    tx.send(
-                        Message::Channel { channel_id, text }
-                            .decorate(token, conn.mailbox_tx.clone()),
-                    );
-                }
-            }
-            Message::Leave { .. } => todo!(),
-            Message::Reply(text) => {
-                reply_sender.send(MessageReply::Reply(text));
+            MessageKind::Leave => todo!(),
+
+            MessageKind::Reply => {
+                todo!()
             }
 
-            Message::Broadcast { .. } => {
+            MessageKind::Broadcast => {
                 todo!() // This probably shouldn't be sent here
             }
 
-            Message::Event {
-                channel_id,
-                event,
-                payload,
-                msg_ref,
-            } => {
-                if let Some(tx) = subscriptions.channels.get(&channel_id) {
-                    tx.send(
-                        Message::Event {
-                            channel_id,
-                            event,
-                            payload,
-                            msg_ref,
-                        }
-                        .decorate(token, conn.mailbox_tx.clone()),
-                    );
+            MessageKind::Event | MessageKind::BroadcastIntercept => {
+                if let Some(tx) = subscriptions.channels.get(&msg.channel_id) {
+                    tx.send(msg.decorate(token, conn.mailbox_tx.clone()));
                 }
             }
 
-            Message::Heartbeat { msg_ref } => {
+            MessageKind::Heartbeat => {
                 reply_sender
-                    .send(MessageReply::Heartbeat { msg_ref })
+                    .send(MessageReply::Heartbeat {
+                        msg_ref: msg.msg_ref.unwrap(),
+                    })
                     .unwrap();
             }
 
-            Message::Push {
-                channel_id,
-                event,
-                payload,
-            } => reply_sender
-                .send(MessageReply::Push {
-                    channel_id,
-                    event,
-                    payload,
-                })
-                .unwrap(),
-
-            Message::BroadcastIntercept { ref channel_id, .. } => {
-                if let Some(tx) = subscriptions.channels.get(&channel_id) {
-                    tx.send(msg.decorate(token, conn.mailbox_tx.clone()));
-                }
+            MessageKind::Push => {
+                reply_sender
+                    .send(MessageReply::Push {
+                        channel_id: msg.channel_id,
+                        event: msg.event,
+                        payload: msg.payload,
+                    })
+                    .unwrap();
             }
         }
     }

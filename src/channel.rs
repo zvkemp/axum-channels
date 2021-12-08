@@ -1,7 +1,8 @@
 // High-level FIXME:
 // a pattern like the Axum extractor macros may be worthwhile exploring here
-use crate::message::MessageReply;
 use crate::message::{DecoratedMessage, Message};
+use crate::message::{MessageKind, MessageReply};
+use serde_json::json;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -94,84 +95,58 @@ impl Channel {
                         .and_then(|_| Ok(self.handle_join(message)));
                 } else if message.is_leave() {
                     self.handle_leave(message);
-                } else if message.is_intercept() {
-                    // FIXME: lots of duplicate logic here
-                    match self.behavior.handle_out(&message) {
-                        None => {
-                            debug!("got MessageReply::None");
-                        }
-                        Some(Message::Reply(inner)) => {
-                            if let Some(reply_to) = message.reply_to {
-                                debug!("sending reply...");
-                                if let Err(e) = reply_to.send(Message::Reply(inner)) {
-                                    error!("unexpected error in reply; error={:?}", e);
-                                };
-                            }
-                        }
-                        Some(Message::Broadcast {
-                            channel_id,
-                            event,
-                            payload,
-                        }) => {
-                            debug!("broadcasting...");
-                            if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast {
-                                channel_id,
-                                event,
-                                payload,
-                            }) {
-                                error!("unexpected error in broadcast; err={:?}", e);
-                            };
-                        }
-
-                        // These are re-sent to the sockets' inboxes, so the channel behavior can modify the response before push
-                        Some(Message::BroadcastIntercept {
-                            channel_id,
-                            event,
-                            payload,
-                        }) => {}
-
-                        _ => {
-                            todo!()
-                        }
-                    }
                 } else {
-                    match self.behavior.handle_message(&message) {
+                    let response = if message.is_intercept() {
+                        self.behavior.handle_out(&message)
+                    } else {
+                        self.behavior.handle_message(&message)
+                    };
+
+                    match response {
                         None => {
-                            debug!("got MessageReply::None");
+                            debug!("got handle_message => None");
                         }
-                        Some(Message::Reply(inner)) => {
-                            if let Some(reply_to) = message.reply_to {
-                                debug!("sending reply...");
-                                if let Err(e) = reply_to.send(Message::Reply(inner)) {
-                                    error!("unexpected error in reply; error={:?}", e);
+
+                        Some(msg) => match msg.kind {
+                            MessageKind::Reply | MessageKind::Push => {
+                                if let Some(reply_to) = message.reply_to {
+                                    debug!("sending reply...");
+                                    if let Err(e) = reply_to.send(msg) {
+                                        error!("unexpected error in reply; error={:?}", e);
+                                    };
+                                }
+                            }
+                            MessageKind::Broadcast => {
+                                debug!("broadcasting...");
+                                if let Err(e) =
+                                    self.broadcast_sender.send(MessageReply::Broadcast {
+                                        channel_id: msg.channel_id,
+                                        event: msg.event,
+                                        payload: msg.payload,
+                                    })
+                                {
+                                    error!("unexpected error in broadcast; err={:?}", e);
                                 };
                             }
-                        }
-                        Some(Message::Broadcast {
-                            channel_id,
-                            event,
-                            payload,
-                        }) => {
-                            debug!("broadcasting...");
-                            if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast {
-                                channel_id,
-                                event,
-                                payload,
-                            }) {
-                                error!("unexpected error in broadcast; err={:?}", e);
-                            };
-                        }
 
-                        // These are re-sent to the sockets' inboxes, so the channel behavior can modify the response before push
-                        Some(Message::BroadcastIntercept {
-                            channel_id,
-                            event,
-                            payload,
-                        }) => {}
+                            MessageKind::BroadcastIntercept => {
+                                debug!("broadcasting...");
+                                if let Err(e) =
+                                    self.broadcast_sender
+                                        .send(MessageReply::BroadcastIntercept {
+                                            channel_id: msg.channel_id,
+                                            event: msg.event,
+                                            payload: msg.payload,
+                                        })
+                                {
+                                    error!("unexpected error in broadcast; err={:?}", e);
+                                };
+                            }
 
-                        _ => {
-                            todo!()
-                        }
+                            _ => {
+                                todo!()
+                            }
+                        },
                     }
                 }
             }
@@ -185,30 +160,32 @@ impl Channel {
     fn handle_join(&self, message: DecoratedMessage) -> () {
         match message {
             DecoratedMessage {
-                inner: Message::Join { channel_id, .. },
+                inner:
+                    Message {
+                        kind: MessageKind::Join,
+                        channel_id,
+                        ..
+                    },
                 reply_to: Some(tx),
                 broadcast_reply_to: Some(broadcast_reply_to),
                 ..
             } => {
-                tx.send(Message::DidJoin {
-                    msg_ref: message.msg_ref.unwrap(),
+                spawn_broadcast_subscriber(
+                    broadcast_reply_to,
+                    tx.clone(),
+                    self.broadcast_sender.subscribe(),
+                );
+
+                tx.send(Message {
+                    join_ref: None, // FIXME: return the token ID here?
+                    kind: MessageKind::DidJoin,
+                    msg_ref: message.msg_ref,
+                    event: "phx_join".into(),
                     channel_id,
-                    channel_sender: self.incoming_sender.clone(),
-                    // FIXME: spawn the task here
-                    broadcast_handle: spawn_broadcast_subscriber(
-                        broadcast_reply_to,
-                        tx.clone(),
-                        self.broadcast_sender.subscribe(),
-                    ),
+                    channel_sender: Some(self.incoming_sender.clone()),
+                    payload: json!(null),
                 })
                 .unwrap();
-
-                // self.broadcast_sender
-                //     .send(MessageReply::Broadcast(format!(
-                //         "socket {} joined the channel. Welcome!",
-                //         message.token
-                //     )))
-                //     .unwrap(); // FIXME
             }
             _ => {
                 eprintln!("unexpected={:?}", message);
@@ -253,10 +230,14 @@ fn spawn_broadcast_subscriber(
             {
                 // send Intercepts back to the individual sockets for further processing
                 mailbox_sender
-                    .send(Message::BroadcastIntercept {
+                    .send(Message {
+                        join_ref: None,
+                        msg_ref: None,
+                        kind: MessageKind::BroadcastIntercept,
                         channel_id,
                         event,
                         payload,
+                        channel_sender: None,
                     })
                     .unwrap()
             } else {

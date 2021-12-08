@@ -6,7 +6,7 @@ use axum::{
 };
 use axum_channels::{
     channel::ChannelBehavior,
-    message::{DecoratedMessage, Message},
+    message::{DecoratedMessage, Message, MessageKind},
     registry::Registry,
     ConnFormat,
 };
@@ -117,7 +117,7 @@ async fn handler(
     Extension(registry): Extension<Arc<Mutex<Registry>>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| {
-        axum_channels::handle_connect(socket, ConnFormat::Message, registry.clone())
+        axum_channels::handle_connect(socket, ConnFormat::Phoenix, registry.clone())
     })
 }
 
@@ -126,11 +126,15 @@ struct DefaultChannel;
 
 impl ChannelBehavior for DefaultChannel {
     fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
-        match &message.inner {
-            Message::Event { event, payload, .. } => Some(Message::Broadcast {
-                event: event.to_string(),
-                payload: payload.clone(),
+        match &message.inner.kind {
+            MessageKind::Event => Some(Message {
+                msg_ref: None,
+                join_ref: None,
+                kind: MessageKind::Broadcast,
+                event: message.inner.event.to_string(),
+                payload: message.inner.payload.clone(),
                 channel_id: message.channel_id().clone(),
+                channel_sender: None,
             }),
             _ => None,
         }

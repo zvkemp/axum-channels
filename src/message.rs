@@ -3,69 +3,29 @@ use axum::extract::ws;
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 
+#[derive(Debug)]
 pub enum MessageKind {
-    Channel,
     Join,
     JoinRequest,
     DidJoin,
     Leave,
-    Event(String),
+    Event,
     Broadcast,
     Heartbeat,
     BroadcastIntercept,
-    Push,
+    Reply, // request-response
+    Push,  // response only
 }
 
-// FIXME: this is getting silly; it's probably type to split of MessageKind, and standardize the other fields
 #[derive(Debug)]
-pub enum Message {
-    Channel {
-        channel_id: ChannelId,
-        text: String,
-    },
-    Join {
-        channel_id: ChannelId,
-    },
-    JoinRequest {
-        channel_id: ChannelId, // topic name
-        msg_ref: String,
-    },
-    DidJoin {
-        channel_id: ChannelId,
-        channel_sender: UnboundedSender<DecoratedMessage>,
-        broadcast_handle: tokio::task::JoinHandle<()>,
-        msg_ref: String,
-    },
-    Leave {
-        channel_id: ChannelId,
-    },
-    Event {
-        channel_id: ChannelId,
-        event: String,
-        payload: serde_json::Value,
-        msg_ref: String,
-    },
-    // FIXME: duplicate of MessageReply::Reply
-    Reply(String),
-    Broadcast {
-        channel_id: ChannelId,
-        event: String,
-        payload: serde_json::Value,
-    },
-    Heartbeat {
-        msg_ref: String,
-    },
-    BroadcastIntercept {
-        channel_id: ChannelId,
-        event: String,
-        payload: serde_json::Value,
-    },
-
-    Push {
-        channel_id: ChannelId,
-        event: String,
-        payload: serde_json::Value,
-    }, // Push FIXME: add this variant; message that is sent to one websocket, but not as a specific reply
+pub struct Message {
+    pub kind: MessageKind,
+    pub channel_id: ChannelId,
+    pub msg_ref: Option<String>,
+    pub join_ref: Option<String>, // this should probably be conceptually merged with Token
+    pub payload: serde_json::Value,
+    pub event: String,
+    pub channel_sender: Option<UnboundedSender<DecoratedMessage>>, // FIXME only used for DidJoin
 }
 
 impl Message {
@@ -101,32 +61,19 @@ lazy_static::lazy_static! {
 
 impl DecoratedMessage {
     pub fn is_join(&self) -> bool {
-        matches!(self.inner, Message::Join { .. })
+        matches!(self.inner.kind, MessageKind::Join)
     }
 
     pub fn is_leave(&self) -> bool {
-        matches!(self.inner, Message::Leave { .. })
+        matches!(self.inner.kind, MessageKind::Leave)
     }
 
     pub fn is_intercept(&self) -> bool {
-        matches!(self.inner, Message::BroadcastIntercept { .. })
+        matches!(self.inner.kind, MessageKind::BroadcastIntercept)
     }
 
     pub fn channel_id(&self) -> &ChannelId {
-        match &self.inner {
-            Message::Channel { channel_id, .. } => channel_id,
-            Message::Join { channel_id } => channel_id,
-            Message::DidJoin { channel_id, .. } => channel_id,
-            Message::Leave { channel_id } => channel_id,
-            Message::JoinRequest { channel_id, .. } => channel_id,
-            // FIXME: probably ok to add channel_id to these two
-            Message::Reply(_) => todo!(),
-            Message::Broadcast { channel_id, .. } => channel_id,
-            Message::Event { channel_id, .. } => channel_id,
-            Message::Heartbeat { .. } => &PHX_CHANNEL,
-            Message::BroadcastIntercept { channel_id, .. } => channel_id,
-            Message::Push { channel_id, .. } => channel_id,
-        }
+        &self.inner.channel_id
     }
 }
 
