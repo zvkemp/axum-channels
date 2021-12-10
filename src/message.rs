@@ -32,15 +32,9 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn decorate(
-        self,
-        token: Token,
-        // channel_id: ChannelId,
-        reply_to: UnboundedSender<Message>,
-    ) -> DecoratedMessage {
+    pub fn decorate(self, token: Token, reply_to: UnboundedSender<Message>) -> DecoratedMessage {
         DecoratedMessage {
             token,
-            // channel_id,
             inner: self,
             reply_to: Some(reply_to),
             ws_reply_to: None,

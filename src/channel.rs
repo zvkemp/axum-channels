@@ -2,10 +2,14 @@ use std::collections::HashMap;
 
 // High-level FIXME:
 // a pattern like the Axum extractor macros may be worthwhile exploring here
+
+// FIXME:
+// this design probably has an upper limit to channel members,
+// as the mutable state means there's no real channel concurrency.
+// This is probably mitigated somewhat by broadcasts, but `BroadcastIntercept`s may end up being expensive to process.
 use crate::message::{DecoratedMessage, Message};
 use crate::message::{MessageKind, MessageReply};
 use crate::types::Token;
-use serde::Serialize;
 use serde_json::json;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -21,10 +25,7 @@ pub struct Channel {
     // socket_state: SocketState,
 }
 
-// pub type SocketState = HashMap<Token, http::Extensions>;
-
-// FIXME: don't serialize this whole thing.
-#[derive(Default, Debug, Serialize)]
+#[derive(Default, Debug)]
 pub struct Presence {
     pub data: HashMap<Token, serde_json::Value>,
 }

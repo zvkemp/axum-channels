@@ -10,7 +10,6 @@ use tracing::{debug, error, info};
 #[derive(Debug, Default)]
 pub struct Registry {
     channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
-    sockets: HashMap<Token, UnboundedSender<MessageReply>>,
     behaviors: HashMap<String, Box<dyn ChannelBehavior>>,
 }
 
@@ -26,17 +25,6 @@ pub enum Error {
 impl Registry {
     // the write half of the socket is connected to the receiver, and the sender here will handle
     // channel subscriptions
-    // FIXME: these are probably no longer necessary, can remove the sockets attribute entirely
-    #[deprecated]
-    pub fn register_writer(&mut self, token: Token, sender: UnboundedSender<MessageReply>) {
-        self.sockets.entry(token).or_insert(sender); // this will be a way to communicate with sockets
-    }
-
-    #[deprecated]
-    pub fn deregister_writer(&mut self, token: Token) {
-        self.sockets.remove(&token);
-    }
-
     pub fn register_behavior(&mut self, key: String, behavior: Box<dyn ChannelBehavior>) {
         self.behaviors.entry(key).or_insert(behavior);
     }

@@ -10,7 +10,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use types::Token;
 
 use crate::message::{Message, MessageReply};
@@ -27,6 +27,8 @@ pub mod registry;
 pub mod types;
 
 pub mod examples;
+#[cfg(test)]
+pub mod tests;
 
 // FIXME: so far this provides minimal value;
 // something like https://docs.rs/http/0.2.5/http/struct.Extensions.html
@@ -195,7 +197,7 @@ async fn read(
     // this task maps ws::Message to Message and sends them to mailbox_tx
     let _ws_handle = tokio::spawn(async move {
         while let Some(msg) = ws_receiver.next().await {
-            info!("{:?}", msg);
+            // info!("{:?}", msg);
             match msg {
                 Ok(inner) => match inner {
                     ws::Message::Text(inner) => {
@@ -230,10 +232,26 @@ async fn read(
                     }
                 },
                 Err(e) => {
-                    error!("error={:?}", e);
+                    error!("unexpected error in websocket reader; err={:?}", e);
+
+                    mailbox_tx.send(Message {
+                        kind: MessageKind::Closed,
+                        channel_id: "_closed".parse().unwrap(),
+                        msg_ref: None,
+                        join_ref: None,
+                        payload: serde_json::Value::Null,
+                        event: "closed".into(),
+                        channel_sender: None,
+                    });
+
+                    handle_write_close(token, registry_c);
+                    handle_read_close(token, None);
+                    break;
                 }
             }
         }
+
+        warn!("websocket reader task shutting down");
     });
 
     while let Some(msg) = conn.mailbox_rx.recv().await {
@@ -328,8 +346,6 @@ fn handle_read_close(token: Token, _frame: Option<CloseFrame>) {
 
 fn handle_write_close(token: Token, registry: Arc<Mutex<Registry>>) {
     debug!("socket writer {} closed", token);
-
-    registry.lock().unwrap().deregister_writer(token);
 }
 
 #[derive(Debug)]
@@ -353,9 +369,6 @@ async fn write(
     sender: UnboundedSender<MessageReply>,
     registry: Arc<Mutex<Registry>>,
 ) {
-    // let mut subscriber = registry.lock().unwrap().register_writer(token);
-    registry.lock().unwrap().register_writer(token, sender);
-
     while let Some(msg) = receiver.recv().await {
         let ws_msg: ws::Message = msg.into();
 
