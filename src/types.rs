@@ -1,6 +1,8 @@
 use std::str::FromStr;
 
-#[derive(Hash, Debug, Clone, Copy, Eq, PartialEq)]
+use serde::Serialize;
+
+#[derive(Hash, Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 pub struct Token(usize);
 
 impl std::fmt::Display for Token {

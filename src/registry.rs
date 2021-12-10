@@ -46,8 +46,7 @@ impl Registry {
     pub fn dispatch(&self, message: DecoratedMessage) -> Result<(), Error> {
         self.channels
             .get(message.channel_id())
-            .ok_or(Error::NoChannel)
-            .unwrap()
+            .ok_or(Error::NoChannel)?
             .send(message)
             .map_err(|_| Error::Transport)
     }
@@ -57,8 +56,9 @@ impl Registry {
         token: Token,
         channel_id: ChannelId,
         mailbox_tx: UnboundedSender<Message>,
-        broadcast_reply_to: UnboundedSender<MessageReply>,
+        ws_reply_to: UnboundedSender<MessageReply>,
         msg_ref: String,
+        payload: serde_json::Value,
     ) {
         info!(
             "handle_join_request: token={}, channel_id={:?}",
@@ -84,13 +84,13 @@ impl Registry {
             channel_id: channel_id.clone(),
             msg_ref: Some(msg_ref.clone()),
             join_ref: None,
-            payload: serde_json::json!(null),
+            payload,
             event: "phx_join".to_string(),
             channel_sender: None,
         }
         .decorate(token, mailbox_tx);
 
-        join_msg.broadcast_reply_to = Some(broadcast_reply_to);
+        join_msg.ws_reply_to = Some(ws_reply_to);
         join_msg.msg_ref = Some(msg_ref);
 
         println!("dispatching {:?}", join_msg);

@@ -15,6 +15,9 @@ pub enum MessageKind {
     BroadcastIntercept,
     Reply, // request-response
     Push,  // response only
+    PresenceChange,
+    BroadcastPresence,
+    Closed,
 }
 
 #[derive(Debug)]
@@ -40,7 +43,7 @@ impl Message {
             // channel_id,
             inner: self,
             reply_to: Some(reply_to),
-            broadcast_reply_to: None,
+            ws_reply_to: None,
             msg_ref: None,
         }
     }
@@ -51,7 +54,7 @@ pub struct DecoratedMessage {
     pub token: Token,
     pub inner: Message,
     pub reply_to: Option<UnboundedSender<Message>>,
-    pub broadcast_reply_to: Option<UnboundedSender<MessageReply>>,
+    pub ws_reply_to: Option<UnboundedSender<MessageReply>>,
     pub msg_ref: Option<String>,
 }
 

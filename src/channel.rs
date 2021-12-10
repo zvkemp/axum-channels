@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 // High-level FIXME:
 // a pattern like the Axum extractor macros may be worthwhile exploring here
 use crate::message::{DecoratedMessage, Message};
 use crate::message::{MessageKind, MessageReply};
+use crate::types::Token;
+use serde::Serialize;
 use serde_json::json;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -13,12 +17,39 @@ pub struct Channel {
     incoming_receiver: UnboundedReceiver<DecoratedMessage>,
     broadcast_sender: broadcast::Sender<MessageReply>,
     behavior: Box<dyn ChannelBehavior>,
+    presence: Presence,
+    // socket_state: SocketState,
 }
 
-pub enum JoinError {
-    Unauthorized,
-    Unknown,
+// pub type SocketState = HashMap<Token, http::Extensions>;
+
+// FIXME: don't serialize this whole thing.
+#[derive(Default, Debug, Serialize)]
+pub struct Presence {
+    pub data: HashMap<Token, serde_json::Value>,
 }
+
+impl Presence {
+    pub fn track(&mut self, token: Token, join_data: &serde_json::Value) {
+        self.data
+            .entry(token)
+            .and_modify(|e| *e = join_data.clone())
+            .or_insert_with(|| join_data.clone());
+    }
+
+    pub fn leave(&mut self, token: Token) {
+        self.data.remove(&token);
+    }
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Join { reason: String },
+    Send(String),
+    Other(String),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait CloneChannelBehavior {
     fn clone_box(&self) -> Box<dyn ChannelBehavior>;
@@ -35,8 +66,24 @@ pub trait ChannelBehavior: std::fmt::Debug + Send + Sync + CloneChannelBehavior 
     }
 
     // authorize new socket connections
-    fn handle_join(&mut self, _message: &DecoratedMessage) -> Result<(), JoinError> {
-        Ok(())
+    fn handle_join(&mut self, _message: &DecoratedMessage) -> Result<Option<Message>> {
+        Ok(None)
+    }
+
+    fn handle_presence(
+        &mut self,
+        channel_id: &crate::types::ChannelId,
+        _presence: &Presence,
+    ) -> Result<Option<Message>> {
+        Ok(None)
+    }
+
+    fn handle_info(&mut self, _message: &Message) -> Result<Option<Message>> {
+        Ok(None)
+    }
+
+    fn handle_leave(&mut self, _message: &DecoratedMessage) -> Result<Option<Message>> {
+        Ok(None)
     }
 }
 
@@ -66,6 +113,7 @@ impl Channel {
             incoming_receiver,
             broadcast_sender,
             behavior,
+            presence: Default::default(),
         }
     }
 
@@ -86,18 +134,24 @@ impl Channel {
 
         tokio::spawn(async move {
             while let Some(message) = self.incoming_receiver.recv().await {
-                debug!("msg={:#?}", message);
-
                 // FIXME: also pass Join to callback to allow behavior to do things
-                if message.is_join() {
-                    self.behavior
-                        .handle_join(&message)
-                        .and_then(|_| Ok(self.handle_join(message)));
-                } else if message.is_leave() {
+                if message.is_leave() {
                     self.handle_leave(message);
                 } else {
                     let response = if message.is_intercept() {
                         self.behavior.handle_out(&message)
+                    } else if message.is_join() {
+                        match self.behavior.handle_join(&message) {
+                            Ok(join_response) => {
+                                debug!("join_response={:#?}", join_response);
+                                self.handle_join(&message);
+                                join_response
+                            }
+                            Err(e) => {
+                                error!("{:?}", e);
+                                None
+                            }
+                        }
                     } else {
                         self.behavior.handle_message(&message)
                     };
@@ -157,35 +211,39 @@ impl Channel {
     // through the locked Registry mutex, though it would be nice not to have to.
     // FIXME: avoid duplicate subscriptions
     // FIXME: add user presence tracking
-    fn handle_join(&self, message: DecoratedMessage) -> () {
+    fn handle_join(&mut self, message: &DecoratedMessage) -> Result<()> {
         match message {
             DecoratedMessage {
                 inner:
                     Message {
                         kind: MessageKind::Join,
-                        channel_id,
+                        ref channel_id,
+                        payload,
                         ..
                     },
                 reply_to: Some(tx),
-                broadcast_reply_to: Some(broadcast_reply_to),
+                ws_reply_to: Some(ws_reply_to),
                 ..
             } => {
                 spawn_broadcast_subscriber(
-                    broadcast_reply_to,
+                    ws_reply_to.clone(),
                     tx.clone(),
                     self.broadcast_sender.subscribe(),
                 );
 
+                self.presence.track(message.token, &payload);
+                self.handle_presence(channel_id);
+
                 tx.send(Message {
                     join_ref: None, // FIXME: return the token ID here?
                     kind: MessageKind::DidJoin,
-                    msg_ref: message.msg_ref,
+                    msg_ref: message.msg_ref.clone(),
                     event: "phx_join".into(),
-                    channel_id,
+                    channel_id: channel_id.clone(),
                     channel_sender: Some(self.incoming_sender.clone()),
                     payload: json!(null),
                 })
-                .unwrap();
+                .map_err(|e| Error::Send(e.to_string()))
             }
             _ => {
                 eprintln!("unexpected={:?}", message);
@@ -194,29 +252,69 @@ impl Channel {
         }
     }
 
-    // FIXME: also pass this to behavior?
-    // Some behaviors may want to set presence
-    fn handle_leave(&self, message: DecoratedMessage) -> () {
-        // self.broadcast_sender
-        //     .send(MessageReply::Broadcast(format!(
-        //         "socket {} left the channel. Goodbye!",
-        //         message.token
-        //     )))
-        //     .unwrap();
+    fn handle_leave(&mut self, message: DecoratedMessage) -> () {
+        self.presence.leave(message.token);
+        self.behavior.handle_leave(&message);
+        self.handle_presence(&message.channel_id());
     }
 
-    // FIXME: what should this look like?
-    // - subscriber is a socket
-    // - should receive a clone of the incoming sender to send messages to the channel
-    // - should
-    // fn subscribe(&self, token: usize) -> broadcast::Receiver<DecoratedMessage> {}
+    fn handle_presence(&mut self, channel_id: &crate::types::ChannelId) -> () {
+        match self.behavior.handle_presence(channel_id, &self.presence) {
+            Ok(Some(msg)) => match msg.kind {
+                MessageKind::Join => todo!(),
+                MessageKind::JoinRequest => todo!(),
+                MessageKind::DidJoin => todo!(),
+                MessageKind::Leave => todo!(),
+                MessageKind::Event => todo!(),
+                MessageKind::Broadcast => {
+                    let _ = self.broadcast_sender.send(MessageReply::Broadcast {
+                        event: msg.event,
+                        payload: msg.payload,
+                        channel_id: msg.channel_id,
+                    });
+                }
+                MessageKind::Heartbeat => todo!(),
+                MessageKind::BroadcastIntercept => todo!(),
+                MessageKind::Reply => todo!(),
+                MessageKind::Push => todo!(),
+                MessageKind::PresenceChange => todo!(),
+                MessageKind::BroadcastPresence => todo!(),
+                MessageKind::Closed => todo!(),
+            },
+
+            Err(e) => {
+                error!("{:?}", e);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_info(&mut self, message: Message) -> () {
+        todo!()
+        // match self.behavior.handle_info(&message) {
+        //     Ok(Some(msg)) => {
+        //         if matches!(msg.kind, MessageKind::BroadcastPresence) {
+        //             let _ = self.broadcast_sender.send(MessageReply::Broadcast {
+        //                 event: "presence".into(),
+        //                 payload: serde_json::json!(self.presence),
+        //                 channel_id: msg.channel_id,
+        //             });
+        //         }
+        //     }
+        //     Err(e) => {
+        //         error!("{:?}", e);
+        //     }
+        //     _ => {}
+        // }
+    }
 }
 
 fn spawn_broadcast_subscriber(
-    socket_sender: UnboundedSender<MessageReply>,
+    ws_sender: UnboundedSender<MessageReply>,
     mailbox_sender: UnboundedSender<Message>,
     mut broadcast: broadcast::Receiver<MessageReply>,
 ) -> JoinHandle<()> {
+    debug!("spawn_broadcast_subscriber");
     // This would work for a Sender, but not UnboundedSender
     // tokio::spawn(BroadcastStream::new(broadcast).forward(PollSender::new(socket_sender)))
 
@@ -242,7 +340,10 @@ fn spawn_broadcast_subscriber(
                     .unwrap()
             } else {
                 // Other messages get sent directly to the websocket writer
-                socket_sender.send(msg_reply);
+                if let Err(e) = ws_sender.send(msg_reply) {
+                    error!("{:?}", e);
+                    break;
+                }
             }
         }
     })

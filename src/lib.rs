@@ -26,6 +26,8 @@ pub mod message;
 pub mod registry;
 pub mod types;
 
+pub mod examples;
+
 // FIXME: so far this provides minimal value;
 // something like https://docs.rs/http/0.2.5/http/struct.Extensions.html
 // would allow some form of mutable state without a lot of futzing with generics
@@ -93,6 +95,7 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
 // A set of senders pointing to the subscribed channels.
 // Avoids a central message bus, instad allows sockets to more-or-less directly send messages
 // to the intended channels.
+#[derive(Debug)]
 pub struct ReaderSubscriptions {
     channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
     token: Token,
@@ -115,6 +118,7 @@ impl ReaderSubscriptions {
 
 impl Drop for ReaderSubscriptions {
     fn drop(&mut self) {
+        debug!("dropping ReaderSubscriptions, {:?}", self);
         for (channel_id, sender) in &self.channels {
             sender.send(
                 Message {
@@ -212,6 +216,15 @@ async fn read(
                     } // FIXME unwrap
                     ws::Message::Pong(_) => todo!(),
                     ws::Message::Close(frame) => {
+                        mailbox_tx.send(Message {
+                            kind: MessageKind::Closed,
+                            channel_id: "_closed".parse().unwrap(),
+                            msg_ref: None,
+                            join_ref: None,
+                            payload: serde_json::Value::Null,
+                            event: "closed".into(),
+                            channel_sender: None,
+                        });
                         handle_write_close(token, registry_c); // it's entirely possible this will get called more than once
                         return handle_read_close(token, frame);
                     }
@@ -242,6 +255,7 @@ async fn read(
                     conn.mailbox_tx.clone(),
                     reply_sender.clone(),
                     msg.msg_ref.unwrap(),
+                    msg.payload,
                 );
             }
             MessageKind::DidJoin => {
@@ -269,6 +283,14 @@ async fn read(
                 todo!() // This probably shouldn't be sent here
             }
 
+            MessageKind::BroadcastPresence => {
+                todo!()
+            }
+
+            MessageKind::PresenceChange => {
+                todo!()
+            }
+
             MessageKind::Event | MessageKind::BroadcastIntercept => {
                 if let Some(tx) = subscriptions.channels.get(&msg.channel_id) {
                     tx.send(msg.decorate(token, conn.mailbox_tx.clone()));
@@ -292,12 +314,16 @@ async fn read(
                     })
                     .unwrap();
             }
+
+            MessageKind::Closed => {
+                return;
+            }
         }
     }
 }
 
 fn handle_read_close(token: Token, _frame: Option<CloseFrame>) {
-    debug!("socket {} closed", token)
+    debug!("socket reader {} closed", token)
 }
 
 fn handle_write_close(token: Token, registry: Arc<Mutex<Registry>>) {

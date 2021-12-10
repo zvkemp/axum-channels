@@ -143,7 +143,7 @@ impl ChannelBehavior for DefaultChannel {
     fn handle_join(
         &mut self,
         _message: &DecoratedMessage,
-    ) -> Result<(), axum_channels::channel::JoinError> {
-        Ok(())
+    ) -> Result<Option<Message>, axum_channels::channel::Error> {
+        Ok(None)
     }
 }
