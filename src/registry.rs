@@ -1,16 +1,16 @@
 use crate::{
-    channel::{Channel, ChannelBehavior},
+    channel::{Channel, ChannelRunner, NewChannel},
     message::{DecoratedMessage, Message, MessageKind, MessageReply},
     types::{ChannelId, Token},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, marker::PhantomData};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info};
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Registry {
     channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
-    behaviors: HashMap<String, Box<dyn ChannelBehavior>>,
+    templates: HashMap<String, Box<dyn NewChannel + Send>>,
 }
 
 #[derive(Debug)]
@@ -25,8 +25,8 @@ pub enum Error {
 impl Registry {
     // the write half of the socket is connected to the receiver, and the sender here will handle
     // channel subscriptions
-    pub fn register_behavior(&mut self, key: String, behavior: Box<dyn ChannelBehavior>) {
-        self.behaviors.entry(key).or_insert(behavior);
+    pub fn register_template<C: NewChannel + Send + 'static>(&mut self, key: String, channel: C) {
+        self.templates.entry(key).or_insert(Box::new(channel));
     }
 
     /// Send a message to a channel. Because the reigstry is typically behind a mutex,
@@ -54,10 +54,10 @@ impl Registry {
         );
 
         if self.channels.get(&channel_id).is_none() {
-            match self.behaviors.get(channel_id.key().unwrap()) {
+            match self.templates.get(channel_id.key().unwrap()) {
                 // FIXME: no unwrap
-                Some(behavior) => {
-                    self.add_channel(channel_id.clone(), behavior.clone());
+                Some(template) => {
+                    self.add_channel(channel_id.clone(), template.new_channel());
                 }
 
                 None => {
@@ -86,8 +86,8 @@ impl Registry {
     }
 
     // FIXME: handle errors
-    pub fn add_channel(&mut self, channel_id: ChannelId, behavior: Box<dyn ChannelBehavior>) {
-        let (_, channel) = Channel::spawn(behavior);
+    pub fn add_channel(&mut self, channel_id: ChannelId, behavior: Box<dyn Channel>) {
+        let (_, channel) = ChannelRunner::spawn(behavior);
         self.channels.entry(channel_id).or_insert(channel);
     }
 }

@@ -5,7 +5,7 @@ use axum::{
     AddExtensionLayer, Router,
 };
 use axum_channels::{
-    channel::ChannelBehavior,
+    channel::Channel,
     message::{DecoratedMessage, Message, MessageKind},
     registry::Registry,
     ConnFormat,
@@ -124,7 +124,7 @@ async fn handler(
 #[derive(Debug, Clone)]
 struct DefaultChannel;
 
-impl ChannelBehavior for DefaultChannel {
+impl Channel for DefaultChannel {
     fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
         match &message.inner.kind {
             MessageKind::Event => Some(Message {

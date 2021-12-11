@@ -17,11 +17,11 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::{debug, error};
 
-pub struct Channel {
+pub struct ChannelRunner {
     incoming_sender: UnboundedSender<DecoratedMessage>,
     incoming_receiver: UnboundedReceiver<DecoratedMessage>,
     broadcast_sender: broadcast::Sender<MessageReply>,
-    behavior: Box<dyn ChannelBehavior>,
+    behavior: Box<dyn Channel>,
     presence: Presence,
     // socket_state: SocketState,
 }
@@ -53,11 +53,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub trait CloneChannelBehavior {
-    fn clone_box(&self) -> Box<dyn ChannelBehavior>;
-}
-
-pub trait ChannelBehavior: std::fmt::Debug + Send + Sync + CloneChannelBehavior {
+pub trait Channel: std::fmt::Debug + Send + Sync {
     fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<Message> {
         None
     }
@@ -89,24 +85,21 @@ pub trait ChannelBehavior: std::fmt::Debug + Send + Sync + CloneChannelBehavior 
     }
 }
 
-impl<T> CloneChannelBehavior for T
-where
-    T: 'static + ChannelBehavior + Clone,
-{
-    fn clone_box(&self) -> Box<dyn ChannelBehavior> {
-        Box::new(self.clone())
+pub trait NewChannel {
+    fn new_channel(&self) -> Box<dyn Channel>;
+}
+
+impl<T: Default + Channel + 'static> NewChannel for T {
+    fn new_channel(&self) -> Box<dyn Channel> {
+        Box::new(Self::default())
     }
 }
 
-impl Clone for Box<dyn ChannelBehavior> {
-    fn clone(&self) -> Box<dyn ChannelBehavior> {
-        self.clone_box()
-    }
-}
+// impl<T: Clone + Channel + 'static> NewChannel for T {}
 
 // FIXME: add channel id
-impl Channel {
-    pub fn new(behavior: Box<dyn ChannelBehavior>) -> Self {
+impl ChannelRunner {
+    pub fn new(behavior: Box<dyn Channel>) -> Self {
         let (incoming_sender, incoming_receiver) = unbounded_channel();
         let (broadcast_sender, _broadcast_receiver) = broadcast::channel(1024);
 
@@ -121,7 +114,7 @@ impl Channel {
 
     // FIXME: need a way to receive a shutdown message
     pub fn spawn(
-        behavior: Box<dyn ChannelBehavior>,
+        behavior: Box<dyn Channel>,
     ) -> (JoinHandle<()>, UnboundedSender<DecoratedMessage>) {
         let channel = Self::new(behavior);
         let sender = channel.incoming_sender.clone();

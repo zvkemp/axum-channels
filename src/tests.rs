@@ -14,17 +14,17 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 
 use crate::{
-    channel::{ChannelBehavior, Presence},
+    channel::{Channel, Presence},
     message::{Message, MessageKind},
     registry::Registry,
     types::ChannelId,
     ConnFormat,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default)]
 struct DefaultChannel;
 
-impl ChannelBehavior for DefaultChannel {
+impl Channel for DefaultChannel {
     fn handle_presence(
         &mut self,
         channel_id: &ChannelId,
