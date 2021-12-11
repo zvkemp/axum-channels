@@ -6,6 +6,7 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use std::{
+    marker::PhantomData,
     net::{SocketAddr, TcpListener},
     sync::{Arc, Mutex},
 };
@@ -131,4 +132,21 @@ async fn test_presence_join_leave() {
         .and_then(|v| v.get("presence"))
         .and_then(|v| v.get("2"))
         .is_none());
+}
+
+struct PhantomDefault<T>(PhantomData<T>);
+
+fn default_from_phantom<T: Default>(template: PhantomDefault<T>) -> T {
+    Default::default()
+}
+
+// FIXME: this is a better constraint for channel templating; clone doesn't make a lot of sense
+// and requires a lot of irritating boxing nonsense
+#[test]
+fn test_phantom_default() {
+    let phantom: PhantomDefault<Vec<String>> = PhantomDefault(PhantomData);
+
+    let mut v = default_from_phantom(phantom);
+
+    v.push("foo".into());
 }

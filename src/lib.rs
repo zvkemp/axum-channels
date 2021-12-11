@@ -1,6 +1,7 @@
 use axum::extract::ws::{self, CloseFrame, WebSocket};
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, SplitStream, StreamExt};
+use futures::Stream;
 use message::{DecoratedMessage, MessageKind};
 use registry::Registry;
 use serde::Deserialize;
@@ -30,33 +31,13 @@ pub mod examples;
 #[cfg(test)]
 pub mod tests;
 
-// FIXME: so far this provides minimal value;
-// something like https://docs.rs/http/0.2.5/http/struct.Extensions.html
-// would allow some form of mutable state without a lot of futzing with generics
+// FIXME: this doesn't provide much utility
 pub struct Conn {
     format: ConnFormat,
     mailbox_tx: UnboundedSender<Message>,
     mailbox_rx: UnboundedReceiver<Message>,
-    extensions: http::Extensions,
 }
 
-// channel responses should be:
-//  - reply (send a reply to the sender)
-//  - broadcast (send a reply to all members of the channel)
-//  - None
-
-// example join flow:
-// - conn sends join:my_channel
-// - my_channel is created if it doesn't exist, with a new broadcast pair
-// - conn subscribes to the broadcast
-
-// FIXME: it may be beneficial to use RwLock instead of Mutex, though the locking operations
-// will probably only happen when mpsc channels are opened for new connections / subscriptions.
-
-// FIXME: this is more or less for testing purposes; the endpoint selected
-// will establish which serialization format will be used for the client.
-// 'message' format is similar to Phoenix socketry, where the event name is accompanied by a json payload,
-// e.g. join,{ "token": "foo" }
 #[derive(Debug, Clone, Copy)]
 pub enum ConnFormat {
     Phoenix,
@@ -69,28 +50,26 @@ fn get_token() -> Token {
 
 pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc<Mutex<Registry>>) {
     let token = get_token();
+
+    // the raw websocket stream
     let (writer, reader) = socket.split();
+
+    // This channel receiver is consumed by the websocket writer;
+    // `sender` sends messages to be serialized and written into the websocket.
     let (sender, receiver) = unbounded_channel();
 
+    // the `mailbox` is consumed in the socket reader function; raw data from the websocket
+    // is parsed and then sent to this channel. Additionally, clones of the mailbox_tx can
+    // be attached to messages to allow for responses to be send directly to the socket task for further processing.
     let (mailbox_tx, mailbox_rx) = unbounded_channel();
 
     let mut conn = Conn {
-        mailbox_tx,
+        mailbox_tx: mailbox_tx.clone(),
         mailbox_rx,
         format,
-        extensions: Default::default(),
     };
 
-    conn.extensions.insert(token);
-
-    tokio::spawn(write(
-        token,
-        format,
-        writer,
-        receiver,
-        sender.clone(),
-        registry.clone(),
-    ));
+    tokio::spawn(write(token, format, writer, receiver, mailbox_tx.clone()));
     tokio::spawn(read(token, conn, reader, sender, registry.clone()));
 }
 
@@ -179,11 +158,26 @@ impl PhoenixParser {
     }
 }
 
+fn handle_close(mailbox_tx: UnboundedSender<Message>, _close_frame: Option<CloseFrame>) {
+    if let Err(e) = mailbox_tx.send(Message {
+        kind: MessageKind::Closed,
+        channel_id: "_closed".parse().unwrap(),
+        msg_ref: None,
+        join_ref: None,
+        payload: serde_json::Value::Null,
+        event: "closed".into(),
+        channel_sender: None,
+    }) {
+        error!("error encountered closing socket; err={:?}", e);
+    }
+}
+
 // reading data from remote
-async fn read(
+// FIXME: continue genericizing this
+async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send + 'static>(
     token: Token,
     mut conn: Conn,
-    mut ws_receiver: SplitStream<WebSocket>,
+    mut ws_receiver: S,
     reply_sender: UnboundedSender<MessageReply>,
     registry: Arc<Mutex<Registry>>,
 ) {
@@ -197,18 +191,16 @@ async fn read(
     // this task maps ws::Message to Message and sends them to mailbox_tx
     let _ws_handle = tokio::spawn(async move {
         while let Some(msg) = ws_receiver.next().await {
-            // info!("{:?}", msg);
             match msg {
                 Ok(inner) => match inner {
                     ws::Message::Text(inner) => {
                         // FIXME: eep
                         let msg: Result<Message, _> = parse_message(&inner, &format);
 
-                        debug!("message parsed; {:?}", msg);
                         match msg {
                             Ok(msg) => mailbox_tx.send(msg).unwrap(),
                             Err(e) => {
-                                error!("{:?}", e);
+                                error!("message could not be parsed; err={:?}", e);
                             }
                         }
                     }
@@ -218,35 +210,12 @@ async fn read(
                     } // FIXME unwrap
                     ws::Message::Pong(_) => todo!(),
                     ws::Message::Close(frame) => {
-                        mailbox_tx.send(Message {
-                            kind: MessageKind::Closed,
-                            channel_id: "_closed".parse().unwrap(),
-                            msg_ref: None,
-                            join_ref: None,
-                            payload: serde_json::Value::Null,
-                            event: "closed".into(),
-                            channel_sender: None,
-                        });
-                        handle_write_close(token, registry_c); // it's entirely possible this will get called more than once
-                        return handle_read_close(token, frame);
+                        return handle_close(mailbox_tx, frame);
                     }
                 },
                 Err(e) => {
                     error!("unexpected error in websocket reader; err={:?}", e);
-
-                    mailbox_tx.send(Message {
-                        kind: MessageKind::Closed,
-                        channel_id: "_closed".parse().unwrap(),
-                        msg_ref: None,
-                        join_ref: None,
-                        payload: serde_json::Value::Null,
-                        event: "closed".into(),
-                        channel_sender: None,
-                    });
-
-                    handle_write_close(token, registry_c);
-                    handle_read_close(token, None);
-                    break;
+                    return handle_close(mailbox_tx, None);
                 }
             }
         }
@@ -340,14 +309,6 @@ async fn read(
     }
 }
 
-fn handle_read_close(token: Token, _frame: Option<CloseFrame>) {
-    debug!("socket reader {} closed", token)
-}
-
-fn handle_write_close(token: Token, registry: Arc<Mutex<Registry>>) {
-    debug!("socket writer {} closed", token);
-}
-
 #[derive(Debug)]
 pub struct ParseError {
     message: Option<String>,
@@ -361,13 +322,13 @@ impl Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+// FIXME: how to genericize the writer?
 async fn write(
     token: Token,
     _format: ConnFormat,
     mut writer: SplitSink<WebSocket, ws::Message>,
     mut receiver: UnboundedReceiver<MessageReply>,
-    sender: UnboundedSender<MessageReply>,
-    registry: Arc<Mutex<Registry>>,
+    mailbox_tx: UnboundedSender<Message>,
 ) {
     while let Some(msg) = receiver.recv().await {
         let ws_msg: ws::Message = msg.into();
@@ -375,9 +336,9 @@ async fn write(
         debug!("[write] msg = {:?}", ws_msg);
         match writer.send(ws_msg).await {
             Ok(..) => {}
-            Err(..) => {
-                return handle_write_close(token, registry);
-                // FIXME: this assumes ConnectionClosed (axum errors somewhat opaque, can't be matched)
+            Err(e) => {
+                error!("error in socket writer; e={:?}", e);
+                return handle_close(mailbox_tx, None);
             }
         }
     }

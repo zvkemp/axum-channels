@@ -7,6 +7,7 @@ use std::collections::HashMap;
 // this design probably has an upper limit to channel members,
 // as the mutable state means there's no real channel concurrency.
 // This is probably mitigated somewhat by broadcasts, but `BroadcastIntercept`s may end up being expensive to process.
+
 use crate::message::{DecoratedMessage, Message};
 use crate::message::{MessageKind, MessageReply};
 use crate::types::Token;
