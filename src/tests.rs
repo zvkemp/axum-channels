@@ -6,7 +6,6 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use std::{
-    marker::PhantomData,
     net::{SocketAddr, TcpListener},
     sync::{Arc, Mutex},
 };
@@ -24,8 +23,9 @@ use crate::{
 #[derive(Debug, Default)]
 struct DefaultChannel;
 
+#[axum::async_trait]
 impl Channel for DefaultChannel {
-    fn handle_presence(
+    async fn handle_presence(
         &mut self,
         channel_id: &ChannelId,
         presence: &Presence,
@@ -82,8 +82,8 @@ async fn test_presence_join_leave() {
     // FIXME: instead of testing everything via external effects, see if we can subscribe to a channel
     // without a real websocket.
 
-    // tracing_subscriber::fmt::init();
-    let (address, _server_handle, registry) = run_server();
+    tracing_subscriber::fmt::init();
+    let (address, _server_handle, _registry) = run_server();
 
     let address = format!("ws://{}/ws", address);
     let (ws_stream, _) = connect_async(&address).await.expect("Failed to connect");
@@ -95,7 +95,7 @@ async fn test_presence_join_leave() {
         .unwrap();
 
     let (ws_stream2, _) = connect_async(&address).await.expect("Failed to connect");
-    let (mut write2, mut read2) = ws_stream2.split();
+    let (mut write2, read2) = ws_stream2.split();
 
     write2
         .send(r#"["2", "2-join", "default", "phx_join", {"arg": "foo2"}]"#.into())
@@ -105,7 +105,6 @@ async fn test_presence_join_leave() {
     let _presence1 = read.next().await;
     let _join_confirm = read.next().await;
     let presence2 = read.next().await;
-
     let decoded2: serde_json::Value =
         serde_json::from_str(presence2.unwrap().unwrap().to_string().as_str()).unwrap();
 
@@ -132,21 +131,4 @@ async fn test_presence_join_leave() {
         .and_then(|v| v.get("presence"))
         .and_then(|v| v.get("2"))
         .is_none());
-}
-
-struct PhantomDefault<T>(PhantomData<T>);
-
-fn default_from_phantom<T: Default>(template: PhantomDefault<T>) -> T {
-    Default::default()
-}
-
-// FIXME: this is a better constraint for channel templating; clone doesn't make a lot of sense
-// and requires a lot of irritating boxing nonsense
-#[test]
-fn test_phantom_default() {
-    let phantom: PhantomDefault<Vec<String>> = PhantomDefault(PhantomData);
-
-    let mut v = default_from_phantom(phantom);
-
-    v.push("foo".into());
 }

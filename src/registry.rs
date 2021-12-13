@@ -1,9 +1,7 @@
-use crate::{
-    channel::{Channel, ChannelRunner, NewChannel},
-    message::{DecoratedMessage, Message, MessageKind, MessageReply},
-    types::{ChannelId, Token},
-};
-use std::{collections::HashMap, marker::PhantomData};
+use crate::channel::{Channel, ChannelRunner, NewChannel};
+use crate::message::{DecoratedMessage, Message, MessageKind, MessageReply};
+use crate::types::{ChannelId, Token};
+use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info};
 

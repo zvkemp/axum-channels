@@ -16,9 +16,8 @@ use std::{
     net::SocketAddr,
     net::TcpListener,
     sync::{Arc, Mutex},
-    time::Duration,
 };
-use tokio::{task::JoinHandle, time::sleep};
+use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tracing::{debug, info};
 use tungstenite::protocol::Message as TgMessage;
@@ -126,7 +125,7 @@ struct DefaultChannel;
 
 #[axum::async_trait]
 impl Channel for DefaultChannel {
-    fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
+    async fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
         match &message.inner.kind {
             MessageKind::Event => Some(Message {
                 msg_ref: None,

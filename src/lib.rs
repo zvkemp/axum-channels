@@ -1,17 +1,15 @@
 use axum::extract::ws::{self, CloseFrame, WebSocket};
 use futures::sink::SinkExt;
-use futures::stream::{SplitSink, SplitStream, StreamExt};
+use futures::stream::{SplitSink, StreamExt};
 use futures::Stream;
 use message::{DecoratedMessage, MessageKind};
 use registry::Registry;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use types::Token;
 
 use crate::message::{Message, MessageReply};
@@ -63,7 +61,7 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc
     // be attached to messages to allow for responses to be send directly to the socket task for further processing.
     let (mailbox_tx, mailbox_rx) = unbounded_channel();
 
-    let mut conn = Conn {
+    let conn = Conn {
         mailbox_tx: mailbox_tx.clone(),
         mailbox_rx,
         format,
@@ -101,7 +99,7 @@ impl Drop for ReaderSubscriptions {
     fn drop(&mut self) {
         debug!("dropping ReaderSubscriptions, {:?}", self);
         for (channel_id, sender) in &self.channels {
-            sender.send(
+            let _ = sender.send(
                 Message {
                     kind: MessageKind::Leave,
                     channel_id: channel_id.clone(),
@@ -280,7 +278,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
 
             MessageKind::Event | MessageKind::BroadcastIntercept => {
                 if let Some(tx) = subscriptions.channels.get(&msg.channel_id) {
-                    tx.send(msg.decorate(token, conn.mailbox_tx.clone()));
+                    let _ = tx.send(msg.decorate(token, conn.mailbox_tx.clone()));
                 }
             }
 
@@ -324,7 +322,7 @@ impl std::error::Error for ParseError {}
 
 // FIXME: how to genericize the writer?
 async fn write(
-    token: Token,
+    _token: Token,
     _format: ConnFormat,
     mut writer: SplitSink<WebSocket, ws::Message>,
     mut receiver: UnboundedReceiver<MessageReply>,

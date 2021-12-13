@@ -21,7 +21,7 @@ pub struct ChannelRunner {
     incoming_sender: UnboundedSender<DecoratedMessage>,
     incoming_receiver: UnboundedReceiver<DecoratedMessage>,
     broadcast_sender: broadcast::Sender<MessageReply>,
-    behavior: Box<dyn Channel>,
+    channel: Box<dyn Channel>,
     presence: Presence,
     // socket_state: SocketState,
 }
@@ -55,12 +55,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[axum::async_trait]
 pub trait Channel: std::fmt::Debug + Send + Sync {
-    fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<Message> {
+    async fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<Message> {
         None
     }
 
     // receives a BroadcastIntercept for socket-specific processing
-    fn handle_out(&mut self, _message: &DecoratedMessage) -> Option<Message> {
+    async fn handle_out(&mut self, _message: &DecoratedMessage) -> Option<Message> {
         None
     }
 
@@ -69,19 +69,19 @@ pub trait Channel: std::fmt::Debug + Send + Sync {
         Ok(None)
     }
 
-    fn handle_presence(
+    async fn handle_presence(
         &mut self,
-        channel_id: &crate::types::ChannelId,
+        _channel_id: &crate::types::ChannelId,
         _presence: &Presence,
     ) -> Result<Option<Message>> {
         Ok(None)
     }
 
-    fn handle_info(&mut self, _message: &Message) -> Result<Option<Message>> {
+    async fn handle_info(&mut self, _message: &Message) -> Result<Option<Message>> {
         Ok(None)
     }
 
-    fn handle_leave(&mut self, _message: &DecoratedMessage) -> Result<Option<Message>> {
+    async fn handle_leave(&mut self, _message: &DecoratedMessage) -> Result<Option<Message>> {
         Ok(None)
     }
 }
@@ -100,7 +100,7 @@ impl<T: Default + Channel + 'static> NewChannel for T {
 
 // FIXME: add channel id
 impl ChannelRunner {
-    pub fn new(behavior: Box<dyn Channel>) -> Self {
+    pub fn new(channel: Box<dyn Channel>) -> Self {
         let (incoming_sender, incoming_receiver) = unbounded_channel();
         let (broadcast_sender, _broadcast_receiver) = broadcast::channel(1024);
 
@@ -108,16 +108,14 @@ impl ChannelRunner {
             incoming_sender,
             incoming_receiver,
             broadcast_sender,
-            behavior,
+            channel,
             presence: Default::default(),
         }
     }
 
     // FIXME: need a way to receive a shutdown message
-    pub fn spawn(
-        behavior: Box<dyn Channel>,
-    ) -> (JoinHandle<()>, UnboundedSender<DecoratedMessage>) {
-        let channel = Self::new(behavior);
+    pub fn spawn(channel: Box<dyn Channel>) -> (JoinHandle<()>, UnboundedSender<DecoratedMessage>) {
+        let channel = Self::new(channel);
         let sender = channel.incoming_sender.clone();
 
         let handle = channel.start();
@@ -130,17 +128,17 @@ impl ChannelRunner {
 
         tokio::spawn(async move {
             while let Some(message) = self.incoming_receiver.recv().await {
-                // FIXME: also pass Join to callback to allow behavior to do things
+                // FIXME: also pass Join to callback to allow channel to do things
                 if message.is_leave() {
-                    self.handle_leave(message);
+                    self.handle_leave(message).await;
                 } else {
                     let response = if message.is_intercept() {
-                        self.behavior.handle_out(&message)
+                        self.channel.handle_out(&message).await
                     } else if message.is_join() {
-                        match self.behavior.handle_join(&message).await {
+                        match self.channel.handle_join(&message).await {
                             Ok(join_response) => {
                                 debug!("join_response={:#?}", join_response);
-                                self.handle_join(&message);
+                                self.handle_join(&message).await;
                                 join_response
                             }
                             Err(e) => {
@@ -149,7 +147,7 @@ impl ChannelRunner {
                             }
                         }
                     } else {
-                        self.behavior.handle_message(&message)
+                        self.channel.handle_message(&message).await
                     };
 
                     match response {
@@ -207,7 +205,7 @@ impl ChannelRunner {
     // through the locked Registry mutex, though it would be nice not to have to.
     // FIXME: avoid duplicate subscriptions
     // FIXME: add user presence tracking
-    fn handle_join(&mut self, message: &DecoratedMessage) -> Result<()> {
+    async fn handle_join(&mut self, message: &DecoratedMessage) -> Result<()> {
         match message {
             DecoratedMessage {
                 inner:
@@ -228,7 +226,7 @@ impl ChannelRunner {
                 );
 
                 self.presence.track(message.token, &payload);
-                self.handle_presence(channel_id);
+                self.handle_presence(channel_id).await;
 
                 tx.send(Message {
                     join_ref: None, // FIXME: return the token ID here?
@@ -248,14 +246,18 @@ impl ChannelRunner {
         }
     }
 
-    fn handle_leave(&mut self, message: DecoratedMessage) -> () {
+    async fn handle_leave(&mut self, message: DecoratedMessage) -> () {
         self.presence.leave(message.token);
-        self.behavior.handle_leave(&message);
-        self.handle_presence(&message.channel_id());
+        let _ = self.channel.handle_leave(&message).await;
+        let _ = self.handle_presence(&message.channel_id()).await;
     }
 
-    fn handle_presence(&mut self, channel_id: &crate::types::ChannelId) -> () {
-        match self.behavior.handle_presence(channel_id, &self.presence) {
+    async fn handle_presence(&mut self, channel_id: &crate::types::ChannelId) -> () {
+        match self
+            .channel
+            .handle_presence(channel_id, &self.presence)
+            .await
+        {
             Ok(Some(msg)) => match msg.kind {
                 MessageKind::Join => todo!(),
                 MessageKind::JoinRequest => todo!(),
@@ -287,21 +289,6 @@ impl ChannelRunner {
 
     fn handle_info(&mut self, message: Message) -> () {
         todo!()
-        // match self.behavior.handle_info(&message) {
-        //     Ok(Some(msg)) => {
-        //         if matches!(msg.kind, MessageKind::BroadcastPresence) {
-        //             let _ = self.broadcast_sender.send(MessageReply::Broadcast {
-        //                 event: "presence".into(),
-        //                 payload: serde_json::json!(self.presence),
-        //                 channel_id: msg.channel_id,
-        //             });
-        //         }
-        //     }
-        //     Err(e) => {
-        //         error!("{:?}", e);
-        //     }
-        //     _ => {}
-        // }
     }
 }
 
