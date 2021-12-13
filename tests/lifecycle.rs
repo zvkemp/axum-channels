@@ -124,6 +124,7 @@ async fn handler(
 #[derive(Debug, Clone)]
 struct DefaultChannel;
 
+#[axum::async_trait]
 impl Channel for DefaultChannel {
     fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
         match &message.inner.kind {
@@ -140,7 +141,7 @@ impl Channel for DefaultChannel {
         }
     }
 
-    fn handle_join(
+    async fn handle_join(
         &mut self,
         _message: &DecoratedMessage,
     ) -> Result<Option<Message>, axum_channels::channel::Error> {

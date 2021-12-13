@@ -53,6 +53,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[axum::async_trait]
 pub trait Channel: std::fmt::Debug + Send + Sync {
     fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<Message> {
         None
@@ -64,7 +65,7 @@ pub trait Channel: std::fmt::Debug + Send + Sync {
     }
 
     // authorize new socket connections
-    fn handle_join(&mut self, _message: &DecoratedMessage) -> Result<Option<Message>> {
+    async fn handle_join(&mut self, _message: &DecoratedMessage) -> Result<Option<Message>> {
         Ok(None)
     }
 
@@ -136,7 +137,7 @@ impl ChannelRunner {
                     let response = if message.is_intercept() {
                         self.behavior.handle_out(&message)
                     } else if message.is_join() {
-                        match self.behavior.handle_join(&message) {
+                        match self.behavior.handle_join(&message).await {
                             Ok(join_response) => {
                                 debug!("join_response={:#?}", join_response);
                                 self.handle_join(&message);
