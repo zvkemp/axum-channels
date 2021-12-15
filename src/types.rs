@@ -28,6 +28,10 @@ impl ChannelId {
         self.delimiter_idx.map(|idx| &self.raw[..idx])
     }
 
+    pub fn value(&self) -> Option<&str> {
+        self.delimiter_idx.map(|idx| &self.raw[(idx + 1)..])
+    }
+
     pub fn id(&self) -> &str {
         &self.raw
     }

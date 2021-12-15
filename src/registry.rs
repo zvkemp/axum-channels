@@ -55,7 +55,7 @@ impl Registry {
             match self.templates.get(channel_id.key().unwrap()) {
                 // FIXME: no unwrap
                 Some(template) => {
-                    self.add_channel(channel_id.clone(), template.new_channel());
+                    self.add_channel(channel_id.clone(), template.new_channel(channel_id.clone()));
                 }
 
                 None => {

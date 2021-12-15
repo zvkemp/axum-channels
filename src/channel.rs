@@ -8,9 +8,16 @@ use std::collections::HashMap;
 // as the mutable state means there's no real channel concurrency.
 // This is probably mitigated somewhat by broadcasts, but `BroadcastIntercept`s may end up being expensive to process.
 
+// FIXME:
+// It's probably necessary to have some sort of pub-sub abstraction, where if the server is run as a cluster,
+// there is a single channel agent responsible for replying to messages. Maybe a good use case for <secret project>
+// - introduce MessageAddress
+// - introduce traits for routing messages
+// - introduce traits AddressEndpoint (maybe this is just Channel)
+
 use crate::message::{DecoratedMessage, Message};
 use crate::message::{MessageKind, MessageReply};
-use crate::types::Token;
+use crate::types::{ChannelId, Token};
 use serde_json::json;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -87,11 +94,11 @@ pub trait Channel: std::fmt::Debug + Send + Sync {
 }
 
 pub trait NewChannel {
-    fn new_channel(&self) -> Box<dyn Channel>;
+    fn new_channel(&self, channel_id: ChannelId) -> Box<dyn Channel>;
 }
 
 impl<T: Default + Channel + 'static> NewChannel for T {
-    fn new_channel(&self) -> Box<dyn Channel> {
+    fn new_channel(&self, _channel_id: ChannelId) -> Box<dyn Channel> {
         Box::new(Self::default())
     }
 }
