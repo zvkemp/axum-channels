@@ -25,7 +25,7 @@ pub mod message;
 pub mod registry;
 pub mod types;
 
-pub mod examples;
+// pub mod examples;
 #[cfg(test)]
 pub mod tests;
 
