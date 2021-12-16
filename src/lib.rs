@@ -66,8 +66,8 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Reg
         format,
     };
 
-    tokio::spawn(write(token, format, writer, receiver, mailbox_tx.clone()));
-    tokio::spawn(read(token, conn, reader, sender, registry.clone()));
+    tokio::spawn(write(token, format, writer, receiver, mailbox_tx));
+    tokio::spawn(read(token, conn, reader, sender, registry));
 }
 
 // A set of senders pointing to the subscribed channels.
@@ -119,8 +119,8 @@ fn parse_message<'a>(
     message: &'a str,
     format: &ConnFormat,
 ) -> Result<Message, Box<dyn std::error::Error + Send + Sync + 'a>> {
-    match format {
-        &ConnFormat::Phoenix => PhoenixParser::from_str(message).map_err(Into::into),
+    match *format {
+        ConnFormat::Phoenix => PhoenixParser::from_str(message).map_err(Into::into),
     }
 }
 
@@ -180,10 +180,9 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
 ) {
     let mut subscriptions = ReaderSubscriptions::new(token, conn.mailbox_tx.clone());
 
-    let format = conn.format.clone();
+    let format = conn.format;
     let mailbox_tx = conn.mailbox_tx.clone();
     let ws_reply_sender = reply_sender.clone(); // directly send a response to the ws writer
-    let registry_c = registry.clone();
 
     // this task maps ws::Message to Message and sends them to mailbox_tx
     let _ws_handle = tokio::spawn(async move {
@@ -246,7 +245,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                 subscriptions
                     .channels
                     .entry(msg.channel_id.clone())
-                    .or_insert(msg.channel_sender.unwrap());
+                    .or_insert_with(|| msg.channel_sender.unwrap());
 
                 reply_sender
                     .send(MessageReply::Join {

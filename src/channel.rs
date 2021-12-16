@@ -232,7 +232,7 @@ impl ChannelRunner {
                     self.broadcast_sender.subscribe(),
                 );
 
-                self.presence.track(message.token, &payload);
+                self.presence.track(message.token, payload);
                 self.handle_presence(channel_id).await;
 
                 tx.send(Message {
@@ -253,13 +253,13 @@ impl ChannelRunner {
         }
     }
 
-    async fn handle_leave(&mut self, message: DecoratedMessage) -> () {
+    async fn handle_leave(&mut self, message: DecoratedMessage) {
         self.presence.leave(message.token);
         let _ = self.channel.handle_leave(&message).await;
-        let _ = self.handle_presence(&message.channel_id()).await;
+        let _ = self.handle_presence(message.channel_id()).await;
     }
 
-    async fn handle_presence(&mut self, channel_id: &crate::types::ChannelId) -> () {
+    async fn handle_presence(&mut self, channel_id: &crate::types::ChannelId) {
         match self
             .channel
             .handle_presence(channel_id, &self.presence)
@@ -294,7 +294,8 @@ impl ChannelRunner {
         }
     }
 
-    fn handle_info(&mut self, message: Message) -> () {
+    #[allow(dead_code)]
+    fn handle_info(&mut self, _message: Message) {
         todo!()
     }
 }

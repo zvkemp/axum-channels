@@ -4,7 +4,7 @@ use crate::types::{ChannelId, Token};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, error, info};
+use tracing::info;
 
 #[derive(Clone, Default, Debug)]
 pub struct Registry {
@@ -68,7 +68,9 @@ impl RegistryInner {
     // the write half of the socket is connected to the receiver, and the sender here will handle
     // channel subscriptions
     fn register_template<C: ChannelTemplate + Send + 'static>(&mut self, key: String, channel: C) {
-        self.templates.entry(key).or_insert(Box::new(channel));
+        self.templates
+            .entry(key)
+            .or_insert_with(|| Box::new(channel));
     }
 
     /// Send a message to a channel. Because the reigstry is typically behind a mutex,
@@ -96,10 +98,11 @@ impl RegistryInner {
         );
 
         if self.channels.get(&channel_id).is_none() {
+            // let template = self.templates.get(channel_id.key().unwrap());
             match self.templates.get(channel_id.key().unwrap()) {
                 // FIXME: no unwrap
-                Some(template) => {
-                    self.add_channel(channel_id.clone(), template.new_channel(channel_id.clone()));
+                Some(_) => {
+                    self.add_channel_from_template(channel_id.clone());
                 }
 
                 None => {
@@ -111,7 +114,7 @@ impl RegistryInner {
 
         let mut join_msg = Message {
             kind: MessageKind::Join,
-            channel_id: channel_id.clone(),
+            channel_id,
             msg_ref: Some(msg_ref.clone()),
             join_ref: None,
             payload,
@@ -125,6 +128,12 @@ impl RegistryInner {
 
         println!("dispatching {:?}", join_msg);
         self.dispatch(join_msg).unwrap();
+    }
+
+    fn add_channel_from_template(&mut self, channel_id: ChannelId) {
+        let template = self.templates.get(channel_id.key().unwrap()).unwrap();
+        let channel = template.new_channel(channel_id.clone());
+        self.add_channel(channel_id, channel);
     }
 
     fn add_channel(&mut self, channel_id: ChannelId, channel: Box<dyn Channel>) {
