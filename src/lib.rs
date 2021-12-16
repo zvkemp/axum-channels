@@ -7,7 +7,6 @@ use registry::Registry;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, warn};
 use types::Token;
@@ -46,7 +45,7 @@ fn get_token() -> Token {
     COUNTER.fetch_add(1, Ordering::Relaxed).into()
 }
 
-pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Arc<Mutex<Registry>>) {
+pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Registry) {
     let token = get_token();
 
     // the raw websocket stream
@@ -177,7 +176,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
     mut conn: Conn,
     mut ws_receiver: S,
     reply_sender: UnboundedSender<MessageReply>,
-    registry: Arc<Mutex<Registry>>,
+    mut registry: Registry,
 ) {
     let mut subscriptions = ReaderSubscriptions::new(token, conn.mailbox_tx.clone());
 
@@ -233,8 +232,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                     msg.channel_id.id()
                 );
 
-                let mut locked = registry.lock().unwrap();
-                locked.handle_join_request(
+                registry.handle_join_request(
                     token,
                     msg.channel_id,
                     conn.mailbox_tx.clone(),

@@ -5,12 +5,12 @@ use axum::{
     AddExtensionLayer, Router,
 };
 use axum_channels::{registry::Registry, ConnFormat};
-use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 #[tokio::main]
 async fn main() {
-    let registry = Arc::new(Mutex::new(Registry::default()));
+    let registry = Registry::default();
+
     let app = Router::new()
         .route("/ws", get(handler))
         .layer(AddExtensionLayer::new(registry));
@@ -23,7 +23,7 @@ async fn main() {
 
 async fn handler(
     ws: WebSocketUpgrade,
-    Extension(registry): Extension<Arc<Mutex<Registry>>>,
+    Extension(registry): Extension<Registry>,
 ) -> impl IntoResponse {
     debug!("handler");
     ws.on_upgrade(move |socket| {

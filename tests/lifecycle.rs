@@ -12,11 +12,7 @@ use axum_channels::{
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
-use std::{
-    net::SocketAddr,
-    net::TcpListener,
-    sync::{Arc, Mutex},
-};
+use std::{net::SocketAddr, net::TcpListener};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tracing::{debug, info};
@@ -86,12 +82,9 @@ async fn test_websocket_lifecycle() {
 }
 
 fn run_server() -> (SocketAddr, JoinHandle<()>) {
-    let registry = Arc::new(Mutex::new(Registry::default()));
-    let mut locked = registry.lock().unwrap();
+    let mut registry = Registry::default();
 
-    locked.add_channel("default:*".parse().unwrap(), Box::new(DefaultChannel));
-
-    drop(locked);
+    registry.add_channel("default:*".parse().unwrap(), Box::new(DefaultChannel));
 
     let app = Router::new()
         .route("/ws", get(handler))
@@ -113,7 +106,7 @@ fn run_server() -> (SocketAddr, JoinHandle<()>) {
 
 async fn handler(
     ws: WebSocketUpgrade,
-    Extension(registry): Extension<Arc<Mutex<Registry>>>,
+    Extension(registry): Extension<Registry>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| {
         axum_channels::handle_connect(socket, ConnFormat::Phoenix, registry.clone())

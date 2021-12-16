@@ -5,10 +5,7 @@ use axum::{
     AddExtensionLayer, Router,
 };
 use futures::{SinkExt, StreamExt};
-use std::{
-    net::{SocketAddr, TcpListener},
-    sync::{Arc, Mutex},
-};
+use std::net::{SocketAddr, TcpListener};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 
@@ -42,13 +39,9 @@ impl Channel for DefaultChannel {
     }
 }
 
-fn run_server() -> (SocketAddr, JoinHandle<()>, Arc<Mutex<Registry>>) {
-    let registry = Arc::new(Mutex::new(Registry::default()));
-    let mut locked = registry.lock().unwrap();
-
-    locked.add_channel("default".parse().unwrap(), Box::new(DefaultChannel));
-
-    drop(locked);
+fn run_server() -> (SocketAddr, JoinHandle<()>, Registry) {
+    let mut registry = Registry::default();
+    registry.add_channel("default".parse().unwrap(), Box::new(DefaultChannel));
 
     let app = Router::new()
         .route("/ws", get(handler))
@@ -70,7 +63,7 @@ fn run_server() -> (SocketAddr, JoinHandle<()>, Arc<Mutex<Registry>>) {
 
 async fn handler(
     ws: WebSocketUpgrade,
-    Extension(registry): Extension<Arc<Mutex<Registry>>>,
+    Extension(registry): Extension<Registry>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| {
         crate::handle_connect(socket, ConnFormat::Phoenix, registry.clone())
