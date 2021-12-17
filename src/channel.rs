@@ -135,77 +135,79 @@ impl ChannelRunner {
 
         tokio::spawn(async move {
             while let Some(message) = self.incoming_receiver.recv().await {
-                // FIXME: also pass Join to callback to allow channel to do things
-                if message.is_leave() {
-                    self.handle_leave(message).await;
-                } else {
-                    let response = if message.is_intercept() {
-                        self.channel.handle_out(&message).await
-                    } else if message.is_join() {
-                        match self.channel.handle_join(&message).await {
-                            Ok(join_response) => {
-                                debug!("join_response={:#?}", join_response);
-                                self.handle_join(&message).await;
-                                join_response
-                            }
-                            Err(e) => {
-                                error!("{:?}", e);
-                                None
-                            }
-                        }
-                    } else {
-                        self.channel.handle_message(&message).await
-                    };
-
-                    match response {
-                        None => {
-                            debug!("got handle_message => None");
-                        }
-
-                        Some(msg) => match msg.kind {
-                            MessageKind::Reply | MessageKind::Push => {
-                                if let Some(reply_to) = message.reply_to {
-                                    debug!("sending reply...");
-                                    if let Err(e) = reply_to.send(msg) {
-                                        error!("unexpected error in reply; error={:?}", e);
-                                    };
-                                }
-                            }
-                            MessageKind::Broadcast => {
-                                debug!("broadcasting...");
-                                if let Err(e) =
-                                    self.broadcast_sender.send(MessageReply::Broadcast {
-                                        channel_id: msg.channel_id,
-                                        event: msg.event,
-                                        payload: msg.payload,
-                                    })
-                                {
-                                    error!("unexpected error in broadcast; err={:?}", e);
-                                };
-                            }
-
-                            MessageKind::BroadcastIntercept => {
-                                debug!("broadcasting...");
-                                if let Err(e) =
-                                    self.broadcast_sender
-                                        .send(MessageReply::BroadcastIntercept {
-                                            channel_id: msg.channel_id,
-                                            event: msg.event,
-                                            payload: msg.payload,
-                                        })
-                                {
-                                    error!("unexpected error in broadcast; err={:?}", e);
-                                };
-                            }
-
-                            _ => {
-                                todo!()
-                            }
-                        },
-                    }
-                }
+                self.handle_incoming(message).await;
             }
         })
+    }
+
+    async fn handle_incoming(&mut self, message: DecoratedMessage) {
+        // FIXME: also pass Join to callback to allow channel to do things
+        if message.is_leave() {
+            self.handle_leave(message).await;
+        } else {
+            let response = if message.is_intercept() {
+                self.channel.handle_out(&message).await
+            } else if message.is_join() {
+                match self.channel.handle_join(&message).await {
+                    Ok(join_response) => {
+                        debug!("join_response={:#?}", join_response);
+                        self.handle_join(&message).await;
+                        join_response
+                    }
+                    Err(e) => {
+                        error!("{:?}", e);
+                        None
+                    }
+                }
+            } else {
+                self.channel.handle_message(&message).await
+            };
+
+            match response {
+                None => {
+                    debug!("got handle_message => None");
+                }
+
+                Some(msg) => match msg.kind {
+                    MessageKind::Reply | MessageKind::Push => {
+                        if let Some(reply_to) = message.reply_to {
+                            debug!("sending reply...");
+                            if let Err(e) = reply_to.send(msg) {
+                                error!("unexpected error in reply; error={:?}", e);
+                            };
+                        }
+                    }
+                    MessageKind::Broadcast => {
+                        debug!("broadcasting...");
+                        if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast {
+                            channel_id: msg.channel_id,
+                            event: msg.event,
+                            payload: msg.payload,
+                        }) {
+                            error!("unexpected error in broadcast; err={:?}", e);
+                        };
+                    }
+
+                    MessageKind::BroadcastIntercept => {
+                        debug!("broadcasting...");
+                        if let Err(e) =
+                            self.broadcast_sender
+                                .send(MessageReply::BroadcastIntercept {
+                                    channel_id: msg.channel_id,
+                                    event: msg.event,
+                                    payload: msg.payload,
+                                })
+                        {
+                            error!("unexpected error in broadcast; err={:?}", e);
+                        };
+                    }
+
+                    _ => {
+                        todo!()
+                    }
+                },
+            }
+        }
     }
 
     // The volume of join requests would probably be sufficient to have everything go
