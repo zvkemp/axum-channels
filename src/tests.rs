@@ -11,7 +11,7 @@ use tokio_tungstenite::connect_async;
 
 use crate::{
     channel::{Channel, Presence},
-    message::{Message, MessageKind},
+    message::{self, Message, MessageKind},
     registry::{Registry, RegistrySender},
     types::ChannelId,
     ConnFormat,
@@ -27,15 +27,11 @@ impl Channel for DefaultChannel {
         channel_id: &ChannelId,
         presence: &Presence,
     ) -> crate::channel::Result<Option<Message>> {
-        Ok(Some(Message {
-            kind: MessageKind::Broadcast,
-            channel_id: channel_id.clone(),
-            msg_ref: None,
-            join_ref: None,
-            payload: serde_json::json!({ "presence": presence.data }),
-            event: "presence".into(),
-            channel_sender: None,
-        }))
+        Ok(Some(message::broadcast(
+            channel_id.clone(),
+            "presence".into(),
+            serde_json::json!({ "presence": presence.data }),
+        )))
     }
 }
 

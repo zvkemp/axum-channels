@@ -16,7 +16,7 @@ use std::time::Duration;
 // - introduce traits for routing messages
 // - introduce traits AddressEndpoint (maybe this is just Channel)
 
-use crate::message::{DecoratedMessage, Message};
+use crate::message::{self, DecoratedMessage, Message};
 use crate::message::{MessageKind, MessageReply};
 use crate::registry::{RegistryMessage, RegistrySender};
 use crate::types::{ChannelId, Token};
@@ -146,9 +146,11 @@ impl ChannelRunner {
         debug!("starting this channel");
 
         tokio::spawn(async move {
-            let timeout = interval(Duration::from_secs(5));
+            let timeout = interval(Duration::from_secs(60));
 
             tokio::pin!(timeout);
+
+            timeout.tick().await; // skip the first tick, which happens immediately
 
             loop {
                 tokio::select! {
@@ -163,6 +165,7 @@ impl ChannelRunner {
                     _ = timeout.tick() => {
                         warn!("[{:?}] inactivity check {:?}", self.channel_id, self.presence);
 
+                        // FIXME: we shouldn't shut down for manually-added channels (ie, those not lazily created from a template)
                         if self.presence.is_empty() {
                             let (tx, rx) = oneshot::channel();
                             // Inform the registry that we plan to disable this channel
@@ -278,15 +281,11 @@ impl ChannelRunner {
                 self.presence.track(message.token, payload);
                 self.handle_presence(channel_id).await;
 
-                tx.send(Message {
-                    join_ref: None, // FIXME: return the token ID here?
-                    kind: MessageKind::DidJoin,
-                    msg_ref: message.msg_ref.clone(),
-                    event: "phx_join".into(),
-                    channel_id: channel_id.clone(),
-                    channel_sender: Some(self.incoming_sender.clone()),
-                    payload: json!(null),
-                })
+                tx.send(message::did_join(
+                    message.msg_ref.clone(),
+                    channel_id.clone(),
+                    self.incoming_sender.clone(),
+                ))
                 .map_err(|e| Error::Send(e.to_string()))
             }
             _ => {
@@ -362,15 +361,7 @@ fn spawn_broadcast_subscriber(
             {
                 // send Intercepts back to the individual sockets for further processing
                 mailbox_sender
-                    .send(Message {
-                        join_ref: None,
-                        msg_ref: None,
-                        kind: MessageKind::BroadcastIntercept,
-                        channel_id,
-                        event,
-                        payload,
-                        channel_sender: None,
-                    })
+                    .send(message::broadcast_intercept(channel_id, event, payload))
                     .unwrap()
             } else {
                 // Other messages get sent directly to the websocket writer

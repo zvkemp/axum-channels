@@ -3,7 +3,7 @@ use crate::message::{DecoratedMessage, Message, MessageKind, MessageReply};
 use crate::types::{ChannelId, Token};
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -13,12 +13,27 @@ pub trait ChannelTemplate: NewChannel + std::fmt::Debug {}
 
 impl<T: NewChannel + std::fmt::Debug> ChannelTemplate for T {}
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Registry {
     channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
     templates: HashMap<String, Box<dyn ChannelTemplate + Send>>,
     sender: Option<RegistrySender>,
+    receiver: Option<RegistryReceiver>,
     last_join_at: HashMap<ChannelId, Instant>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        let (reg_sender, reg_receiver) = unbounded_channel();
+
+        Registry {
+            channels: Default::default(),
+            templates: Default::default(),
+            sender: Some(reg_sender),
+            receiver: Some(reg_receiver),
+            last_join_at: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -45,16 +60,16 @@ pub enum RegistryMessage {
 }
 
 pub type RegistrySender = UnboundedSender<RegistryMessage>;
+pub type RegistryReceiver = UnboundedReceiver<RegistryMessage>;
 
 // This RegistryInner can probably be used in two ways:
 // - global registry, which keeps track of all ws channels and socket mpsc channels
 // - within the channel itself, to track subscribers
 impl Registry {
     pub fn start(mut self) -> (RegistrySender, JoinHandle<()>) {
-        let (sender, mut receiver) = unbounded_channel();
-
-        self.sender = Some(sender.clone());
-
+        let sender = self.sender.clone().unwrap();
+        let mut receiver = self.receiver.take().unwrap();
+        dbg!(&self);
         let handle = tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
                 self.handle_message(msg).await;
