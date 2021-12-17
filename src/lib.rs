@@ -3,7 +3,7 @@ use futures::sink::SinkExt;
 use futures::stream::{SplitSink, StreamExt};
 use futures::Stream;
 use message::{DecoratedMessage, MessageKind};
-use registry::Registry;
+use registry::{RegistryMessage, RegistrySender};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -45,7 +45,7 @@ fn get_token() -> Token {
     COUNTER.fetch_add(1, Ordering::Relaxed).into()
 }
 
-pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Registry) {
+pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: RegistrySender) {
     let token = get_token();
 
     // the raw websocket stream
@@ -176,7 +176,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
     mut conn: Conn,
     mut ws_receiver: S,
     reply_sender: UnboundedSender<MessageReply>,
-    mut registry: Registry,
+    registry_sender: RegistrySender,
 ) {
     let mut subscriptions = ReaderSubscriptions::new(token, conn.mailbox_tx.clone());
 
@@ -231,14 +231,14 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                     msg.channel_id.id()
                 );
 
-                registry.handle_join_request(
+                registry_sender.send(RegistryMessage::JoinRequest {
                     token,
-                    msg.channel_id,
-                    conn.mailbox_tx.clone(),
-                    reply_sender.clone(),
-                    msg.msg_ref.unwrap(),
-                    msg.payload,
-                );
+                    channel_id: msg.channel_id,
+                    mailbox_tx: conn.mailbox_tx.clone(),
+                    reply_sender: reply_sender.clone(),
+                    msg_ref: msg.msg_ref.unwrap(),
+                    payload: msg.payload,
+                });
             }
             MessageKind::DidJoin => {
                 debug!("received join confirmation");

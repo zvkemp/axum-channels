@@ -12,7 +12,7 @@ use tokio_tungstenite::connect_async;
 use crate::{
     channel::{Channel, Presence},
     message::{Message, MessageKind},
-    registry::Registry,
+    registry::{Registry, RegistrySender},
     types::ChannelId,
     ConnFormat,
 };
@@ -39,13 +39,15 @@ impl Channel for DefaultChannel {
     }
 }
 
-fn run_server() -> (SocketAddr, JoinHandle<()>, Registry) {
+fn run_server() -> (SocketAddr, JoinHandle<()>, RegistrySender) {
     let mut registry = Registry::default();
     registry.add_channel("default".parse().unwrap(), Box::new(DefaultChannel));
 
+    let (registry_sender, _registry_handle) = registry.start();
+
     let app = Router::new()
         .route("/ws", get(handler))
-        .layer(AddExtensionLayer::new(registry.clone()));
+        .layer(AddExtensionLayer::new(registry_sender.clone()));
 
     let listener = TcpListener::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap()).unwrap();
     let socket_addr = listener.local_addr().unwrap();
@@ -58,16 +60,14 @@ fn run_server() -> (SocketAddr, JoinHandle<()>, Registry) {
             .unwrap();
     });
 
-    (socket_addr, handle, registry)
+    (socket_addr, handle, registry_sender)
 }
 
 async fn handler(
     ws: WebSocketUpgrade,
-    Extension(registry): Extension<Registry>,
+    Extension(registry): Extension<RegistrySender>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        crate::handle_connect(socket, ConnFormat::Phoenix, registry.clone())
-    })
+    ws.on_upgrade(move |socket| crate::handle_connect(socket, ConnFormat::Phoenix, registry))
 }
 
 #[tokio::test]

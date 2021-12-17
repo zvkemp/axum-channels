@@ -2,21 +2,16 @@ use crate::channel::{Channel, ChannelRunner, NewChannel};
 use crate::message::{DecoratedMessage, Message, MessageKind, MessageReply};
 use crate::types::{ChannelId, Token};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::task::JoinHandle;
 use tracing::info;
-
-#[derive(Clone, Default, Debug)]
-pub struct Registry {
-    inner: Arc<Mutex<RegistryInner>>,
-}
 
 pub trait ChannelTemplate: NewChannel + std::fmt::Debug {}
 
 impl<T: NewChannel + std::fmt::Debug> ChannelTemplate for T {}
 
 #[derive(Default, Debug)]
-pub struct RegistryInner {
+pub struct Registry {
     channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
     templates: HashMap<String, Box<dyn ChannelTemplate + Send>>,
 }
@@ -27,44 +22,64 @@ pub enum Error {
     Transport,
 }
 
-impl Registry {
-    pub fn register_template<C: ChannelTemplate + Send + 'static>(
-        &mut self,
-        key: String,
-        channel: C,
-    ) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.register_template(key, channel)
-    }
-
-    pub fn dispatch(&self, message: DecoratedMessage) -> Result<(), Error> {
-        let inner = self.inner.lock().unwrap();
-        inner.dispatch(message)
-    }
-
-    pub fn handle_join_request(
-        &mut self,
+pub enum RegistryMessage {
+    Dispatch(DecoratedMessage),
+    JoinRequest {
         token: Token,
         channel_id: ChannelId,
         mailbox_tx: UnboundedSender<Message>,
-        ws_reply_to: UnboundedSender<MessageReply>,
+        reply_sender: UnboundedSender<MessageReply>,
         msg_ref: String,
         payload: serde_json::Value,
-    ) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.handle_join_request(token, channel_id, mailbox_tx, ws_reply_to, msg_ref, payload)
-    }
-
-    pub fn add_channel(&mut self, channel_id: ChannelId, channel: Box<dyn Channel>) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.add_channel(channel_id, channel)
-    }
+    },
+    // fixme
+    ChannelClosed,
 }
+
+pub type RegistrySender = UnboundedSender<RegistryMessage>;
 
 // This RegistryInner can probably be used in two ways:
 // - global registry, which keeps track of all ws channels and socket mpsc channels
 // - within the channel itself, to track subscribers
-impl RegistryInner {
+impl Registry {
+    pub fn start(mut self) -> (RegistrySender, JoinHandle<()>) {
+        let (sender, mut receiver) = unbounded_channel();
+
+        let handle = tokio::spawn(async move {
+            while let Some(msg) = receiver.recv().await {
+                self.handle_message(msg).await;
+            }
+        });
+
+        (sender, handle)
+    }
+
+    async fn handle_message(&mut self, message: RegistryMessage) {
+        match message {
+            RegistryMessage::Dispatch(inner) => {
+                self.dispatch(inner);
+            }
+            RegistryMessage::JoinRequest {
+                token,
+                channel_id,
+                mailbox_tx,
+                reply_sender,
+                msg_ref,
+                payload,
+            } => {
+                self.handle_join_request(
+                    token,
+                    channel_id,
+                    mailbox_tx,
+                    reply_sender,
+                    msg_ref,
+                    payload,
+                );
+            }
+            RegistryMessage::ChannelClosed => todo!(),
+        }
+    }
+
     // the write half of the socket is connected to the receiver, and the sender here will handle
     // channel subscriptions
     fn register_template<C: ChannelTemplate + Send + 'static>(&mut self, key: String, channel: C) {
@@ -136,7 +151,7 @@ impl RegistryInner {
         self.add_channel(channel_id, channel);
     }
 
-    fn add_channel(&mut self, channel_id: ChannelId, channel: Box<dyn Channel>) {
+    pub fn add_channel(&mut self, channel_id: ChannelId, channel: Box<dyn Channel>) {
         let (_, channel_sender) = ChannelRunner::spawn(channel);
         self.channels.entry(channel_id).or_insert(channel_sender);
     }

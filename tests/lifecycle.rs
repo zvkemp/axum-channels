@@ -7,7 +7,7 @@ use axum::{
 use axum_channels::{
     channel::Channel,
     message::{DecoratedMessage, Message, MessageKind},
-    registry::Registry,
+    registry::{Registry, RegistrySender},
     ConnFormat,
 };
 use futures::{SinkExt, StreamExt};
@@ -85,10 +85,11 @@ fn run_server() -> (SocketAddr, JoinHandle<()>) {
     let mut registry = Registry::default();
 
     registry.add_channel("default:*".parse().unwrap(), Box::new(DefaultChannel));
+    let (registry_sender, _registry_handle) = registry.start();
 
     let app = Router::new()
         .route("/ws", get(handler))
-        .layer(AddExtensionLayer::new(registry));
+        .layer(AddExtensionLayer::new(registry_sender));
 
     let listener = TcpListener::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap()).unwrap();
     let socket_addr = listener.local_addr().unwrap();
@@ -106,10 +107,10 @@ fn run_server() -> (SocketAddr, JoinHandle<()>) {
 
 async fn handler(
     ws: WebSocketUpgrade,
-    Extension(registry): Extension<Registry>,
+    Extension(registry): Extension<RegistrySender>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| {
-        axum_channels::handle_connect(socket, ConnFormat::Phoenix, registry.clone())
+        axum_channels::handle_connect(socket, ConnFormat::Phoenix, registry)
     })
 }
 
