@@ -69,7 +69,6 @@ impl Registry {
     pub fn start(mut self) -> (RegistrySender, JoinHandle<()>) {
         let sender = self.sender.clone().unwrap();
         let mut receiver = self.receiver.take().unwrap();
-        dbg!(&self);
         let handle = tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
                 self.handle_message(msg).await;

@@ -152,6 +152,7 @@ impl ChannelRunner {
 
             timeout.tick().await; // skip the first tick, which happens immediately
 
+            // FIXME: may just need an additional receiver for registry messages
             loop {
                 tokio::select! {
                     m = self.incoming_receiver.recv() => {
