@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 // High-level FIXME:
 // a pattern like the Axum extractor macros may be worthwhile exploring here
@@ -17,12 +18,14 @@ use std::collections::HashMap;
 
 use crate::message::{DecoratedMessage, Message};
 use crate::message::{MessageKind, MessageReply};
+use crate::registry::{RegistryMessage, RegistrySender};
 use crate::types::{ChannelId, Token};
 use serde_json::json;
-use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{debug, error};
+use tokio::time::interval;
+use tracing::{debug, error, warn};
 
 pub struct ChannelRunner {
     incoming_sender: UnboundedSender<DecoratedMessage>,
@@ -30,7 +33,7 @@ pub struct ChannelRunner {
     broadcast_sender: broadcast::Sender<MessageReply>,
     channel: Box<dyn Channel>,
     presence: Presence,
-    // socket_state: SocketState,
+    channel_id: ChannelId,
 }
 
 #[derive(Default, Debug)]
@@ -48,6 +51,10 @@ impl Presence {
 
     pub fn leave(&mut self, token: Token) {
         self.data.remove(&token);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 }
 
@@ -107,7 +114,7 @@ impl<T: Default + Channel + 'static> NewChannel for T {
 
 // FIXME: add channel id
 impl ChannelRunner {
-    pub fn new(channel: Box<dyn Channel>) -> Self {
+    pub fn new(channel_id: ChannelId, channel: Box<dyn Channel>) -> Self {
         let (incoming_sender, incoming_receiver) = unbounded_channel();
         let (broadcast_sender, _broadcast_receiver) = broadcast::channel(1024);
 
@@ -116,26 +123,60 @@ impl ChannelRunner {
             incoming_receiver,
             broadcast_sender,
             channel,
+            channel_id,
             presence: Default::default(),
         }
     }
 
     // FIXME: need a way to receive a shutdown message
-    pub fn spawn(channel: Box<dyn Channel>) -> (JoinHandle<()>, UnboundedSender<DecoratedMessage>) {
-        let channel = Self::new(channel);
+    pub fn spawn(
+        channel_id: ChannelId,
+        channel: Box<dyn Channel>,
+        registry_sender: RegistrySender,
+    ) -> (JoinHandle<()>, UnboundedSender<DecoratedMessage>) {
+        let channel = Self::new(channel_id, channel);
         let sender = channel.incoming_sender.clone();
 
-        let handle = channel.start();
+        let handle = channel.start(registry_sender);
 
         (handle, sender)
     }
 
-    pub fn start(mut self) -> JoinHandle<()> {
+    pub fn start(mut self, registry_sender: RegistrySender) -> JoinHandle<()> {
         debug!("starting this channel");
 
         tokio::spawn(async move {
-            while let Some(message) = self.incoming_receiver.recv().await {
-                self.handle_incoming(message).await;
+            let timeout = interval(Duration::from_secs(5));
+
+            tokio::pin!(timeout);
+
+            loop {
+                tokio::select! {
+                    m = self.incoming_receiver.recv() => {
+                        match m {
+                            Some(message) => { self.handle_incoming(message).await; }
+                            None => { break; }
+                        }
+
+                        timeout.reset();
+                    }
+                    _ = timeout.tick() => {
+                        warn!("[{:?}] inactivity check {:?}", self.channel_id, self.presence);
+
+                        if self.presence.is_empty() {
+                            let (tx, rx) = oneshot::channel();
+                            // Inform the registry that we plan to disable this channel
+                            registry_sender.send(RegistryMessage::Inactivity(self.channel_id.clone(), tx));
+
+                            // If the registry has confirmed that no new sockets have connect since the Inactivity notice was sent,
+                            // we can shut down.
+                            if let Ok(RegistryMessage::Close) = rx.await {
+                                warn!("{:?} shutting down due to inactivity", self.channel_id);
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         })
     }
