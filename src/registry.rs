@@ -3,6 +3,7 @@ use crate::message::{DecoratedMessage, Message, MessageKind, MessageReply};
 use crate::types::{ChannelId, Token};
 use std::collections::HashMap;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::info;
 
@@ -34,6 +35,7 @@ pub enum RegistryMessage {
     },
     // fixme
     ChannelClosed,
+    Debug(oneshot::Sender<String>),
 }
 
 pub type RegistrySender = UnboundedSender<RegistryMessage>;
@@ -77,12 +79,20 @@ impl Registry {
                 );
             }
             RegistryMessage::ChannelClosed => todo!(),
+            RegistryMessage::Debug(reply_to) => {
+                let reply = format!("{:#?}", self);
+                reply_to.send(reply);
+            }
         }
     }
 
     // the write half of the socket is connected to the receiver, and the sender here will handle
     // channel subscriptions
-    fn register_template<C: ChannelTemplate + Send + 'static>(&mut self, key: String, channel: C) {
+    pub fn register_template<C: ChannelTemplate + Send + 'static>(
+        &mut self,
+        key: String,
+        channel: C,
+    ) {
         self.templates
             .entry(key)
             .or_insert_with(|| Box::new(channel));
