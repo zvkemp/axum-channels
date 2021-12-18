@@ -1,5 +1,6 @@
 use crate::channel::{Channel, ChannelRunner, NewChannel};
 use crate::message::{DecoratedMessage, Message, MessageKind, MessageReply};
+use crate::spawn_named;
 use crate::types::{ChannelId, Token};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -69,11 +70,14 @@ impl Registry {
     pub fn start(mut self) -> (RegistrySender, JoinHandle<()>) {
         let sender = self.sender.clone().unwrap();
         let mut receiver = self.receiver.take().unwrap();
-        let handle = tokio::spawn(async move {
-            while let Some(msg) = receiver.recv().await {
-                self.handle_message(msg).await;
-            }
-        });
+        let handle = spawn_named(
+            async move {
+                while let Some(msg) = receiver.recv().await {
+                    self.handle_message(msg).await;
+                }
+            },
+            "registry",
+        );
 
         (sender, handle)
     }

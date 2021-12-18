@@ -66,8 +66,14 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Reg
         format,
     };
 
-    tokio::spawn(write(token, format, writer, receiver, mailbox_tx));
-    tokio::spawn(read(token, conn, reader, sender, registry));
+    spawn_named(
+        write(token, format, writer, receiver, mailbox_tx),
+        &format!("socket_writer:{}", token),
+    );
+    spawn_named(
+        read(token, conn, reader, sender, registry),
+        &format!("socket_reader:{}", token),
+    );
 }
 
 // A set of senders pointing to the subscribed channels.
@@ -114,7 +120,6 @@ impl Drop for ReaderSubscriptions {
     }
 }
 
-// FIXME: should be temporary?
 fn parse_message<'a>(
     message: &'a str,
     format: &ConnFormat,
@@ -185,39 +190,42 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
     let ws_reply_sender = reply_sender.clone(); // directly send a response to the ws writer
 
     // this task maps ws::Message to Message and sends them to mailbox_tx
-    let _ws_handle = tokio::spawn(async move {
-        while let Some(msg) = ws_receiver.next().await {
-            match msg {
-                Ok(inner) => match inner {
-                    ws::Message::Text(inner) => {
-                        // FIXME: eep
-                        let msg: Result<Message, _> = parse_message(&inner, &format);
+    let _ws_handle = spawn_named(
+        async move {
+            while let Some(msg) = ws_receiver.next().await {
+                match msg {
+                    Ok(inner) => match inner {
+                        ws::Message::Text(inner) => {
+                            // FIXME: eep
+                            let msg: Result<Message, _> = parse_message(&inner, &format);
 
-                        match msg {
-                            Ok(msg) => mailbox_tx.send(msg).unwrap(),
-                            Err(e) => {
-                                error!("message could not be parsed; err={:?}", e);
+                            match msg {
+                                Ok(msg) => mailbox_tx.send(msg).unwrap(),
+                                Err(e) => {
+                                    error!("message could not be parsed; err={:?}", e);
+                                }
                             }
                         }
+                        ws::Message::Binary(_) => todo!(),
+                        ws::Message::Ping(data) => {
+                            ws_reply_sender.send(MessageReply::Pong(data)).unwrap()
+                        } // FIXME unwrap
+                        ws::Message::Pong(_) => todo!(),
+                        ws::Message::Close(frame) => {
+                            return handle_close(mailbox_tx, frame);
+                        }
+                    },
+                    Err(e) => {
+                        error!("unexpected error in websocket reader; err={:?}", e);
+                        return handle_close(mailbox_tx, None);
                     }
-                    ws::Message::Binary(_) => todo!(),
-                    ws::Message::Ping(data) => {
-                        ws_reply_sender.send(MessageReply::Pong(data)).unwrap()
-                    } // FIXME unwrap
-                    ws::Message::Pong(_) => todo!(),
-                    ws::Message::Close(frame) => {
-                        return handle_close(mailbox_tx, frame);
-                    }
-                },
-                Err(e) => {
-                    error!("unexpected error in websocket reader; err={:?}", e);
-                    return handle_close(mailbox_tx, None);
                 }
             }
-        }
 
-        warn!("websocket reader task shutting down");
-    });
+            warn!("websocket mapper task shutting down");
+        },
+        &format!("websocket_mapper:{}", token),
+    );
 
     while let Some(msg) = conn.mailbox_rx.recv().await {
         match &msg.kind {
@@ -337,4 +345,19 @@ async fn write(
             }
         }
     }
+}
+
+#[track_caller]
+pub(crate) fn spawn_named<T>(
+    task: impl std::future::Future<Output = T> + Send + 'static,
+    _name: &str,
+) -> tokio::task::JoinHandle<T>
+where
+    T: Send + 'static,
+{
+    #[cfg(tokio_unstable)]
+    return tokio::task::Builder::new().name(_name).spawn(task);
+
+    #[cfg(not(tokio_unstable))]
+    tokio::spawn(task)
 }

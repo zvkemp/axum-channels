@@ -19,6 +19,7 @@ use std::time::Duration;
 use crate::message::{self, DecoratedMessage, Message};
 use crate::message::{MessageKind, MessageReply};
 use crate::registry::{RegistryMessage, RegistrySender};
+use crate::spawn_named;
 use crate::types::{ChannelId, Token};
 use serde_json::json;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -143,46 +144,50 @@ impl ChannelRunner {
     }
 
     pub fn start(mut self, registry_sender: RegistrySender) -> JoinHandle<()> {
-        debug!("starting this channel");
+        let channel_id = self.channel_id.clone();
+        debug!("starting {}", channel_id);
 
-        tokio::spawn(async move {
-            let timeout = interval(Duration::from_secs(60));
+        spawn_named(
+            async move {
+                let timeout = interval(Duration::from_secs(60));
 
-            tokio::pin!(timeout);
+                tokio::pin!(timeout);
 
-            timeout.tick().await; // skip the first tick, which happens immediately
+                timeout.tick().await; // skip the first tick, which happens immediately
 
-            // FIXME: may just need an additional receiver for registry messages
-            loop {
-                tokio::select! {
-                    m = self.incoming_receiver.recv() => {
-                        match m {
-                            Some(message) => { self.handle_incoming(message).await; }
-                            None => { break; }
+                // FIXME: may just need an additional receiver for registry messages
+                loop {
+                    tokio::select! {
+                        m = self.incoming_receiver.recv() => {
+                            match m {
+                                Some(message) => { self.handle_incoming(message).await; }
+                                None => { break; }
+                            }
+
+                            timeout.reset();
                         }
+                        _ = timeout.tick() => {
+                            warn!("[{:?}] inactivity check {:?}", self.channel_id, self.presence);
 
-                        timeout.reset();
-                    }
-                    _ = timeout.tick() => {
-                        warn!("[{:?}] inactivity check {:?}", self.channel_id, self.presence);
+                            // FIXME: we shouldn't shut down for manually-added channels (ie, those not lazily created from a template)
+                            if self.presence.is_empty() {
+                                let (tx, rx) = oneshot::channel();
+                                // Inform the registry that we plan to disable this channel
+                                registry_sender.send(RegistryMessage::Inactivity(self.channel_id.clone(), tx));
 
-                        // FIXME: we shouldn't shut down for manually-added channels (ie, those not lazily created from a template)
-                        if self.presence.is_empty() {
-                            let (tx, rx) = oneshot::channel();
-                            // Inform the registry that we plan to disable this channel
-                            registry_sender.send(RegistryMessage::Inactivity(self.channel_id.clone(), tx));
-
-                            // If the registry has confirmed that no new sockets have connect since the Inactivity notice was sent,
-                            // we can shut down.
-                            if let Ok(RegistryMessage::Close) = rx.await {
-                                warn!("{:?} shutting down due to inactivity", self.channel_id);
-                                break;
+                                // If the registry has confirmed that no new sockets have connect since the Inactivity notice was sent,
+                                // we can shut down.
+                                if let Ok(RegistryMessage::Close) = rx.await {
+                                    warn!("{:?} shutting down due to inactivity", self.channel_id);
+                                    break;
+                                }
                             }
                         }
                     }
                 }
-            }
-        })
+            },
+            &format!("{}:mailbox", channel_id),
+        )
     }
 
     async fn handle_incoming(&mut self, message: DecoratedMessage) {
@@ -277,6 +282,8 @@ impl ChannelRunner {
                     ws_reply_to.clone(),
                     tx.clone(),
                     self.broadcast_sender.subscribe(),
+                    &message.token,
+                    &self.channel_id,
                 );
 
                 self.presence.track(message.token, payload);
@@ -347,30 +354,35 @@ fn spawn_broadcast_subscriber(
     ws_sender: UnboundedSender<MessageReply>,
     mailbox_sender: UnboundedSender<Message>,
     mut broadcast: broadcast::Receiver<MessageReply>,
+    token: &Token,
+    channel_id: &ChannelId,
 ) -> JoinHandle<()> {
     debug!("spawn_broadcast_subscriber");
     // This would work for a Sender, but not UnboundedSender
     // tokio::spawn(BroadcastStream::new(broadcast).forward(PollSender::new(socket_sender)))
 
-    tokio::spawn(async move {
-        while let Ok(msg_reply) = broadcast.recv().await {
-            if let MessageReply::BroadcastIntercept {
-                channel_id,
-                event,
-                payload,
-            } = msg_reply
-            {
-                // send Intercepts back to the individual sockets for further processing
-                mailbox_sender
-                    .send(message::broadcast_intercept(channel_id, event, payload))
-                    .unwrap()
-            } else {
-                // Other messages get sent directly to the websocket writer
-                if let Err(e) = ws_sender.send(msg_reply) {
-                    error!("{:?}", e);
-                    break;
+    spawn_named(
+        async move {
+            while let Ok(msg_reply) = broadcast.recv().await {
+                if let MessageReply::BroadcastIntercept {
+                    channel_id,
+                    event,
+                    payload,
+                } = msg_reply
+                {
+                    // send Intercepts back to the individual sockets for further processing
+                    mailbox_sender
+                        .send(message::broadcast_intercept(channel_id, event, payload))
+                        .unwrap()
+                } else {
+                    // Other messages get sent directly to the websocket writer
+                    if let Err(e) = ws_sender.send(msg_reply) {
+                        error!("{:?}", e);
+                        break;
+                    }
                 }
             }
-        }
-    })
+        },
+        &format!("broadcast:{}:{}", channel_id, token),
+    )
 }

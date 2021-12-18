@@ -825,6 +825,7 @@ dependencies = [
  "pin-project-lite",
  "signal-hook-registry",
  "tokio-macros",
+ "tracing",
  "winapi",
 ]
 

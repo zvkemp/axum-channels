@@ -11,7 +11,7 @@ axum = { version = "^0.4.2", features = ["ws"] }
 futures = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
-tokio = { version = "*", features = ["full"] }
+tokio = { version = "*", features = ["full", "tracing"] }
 tokio-util = "*"
 tracing = "*"
 http = "*"

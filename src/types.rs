@@ -7,7 +7,7 @@ pub struct Token(usize);
 
 impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Token({})", self.0)
+        write!(f, "<{}>", self.0)
     }
 }
 
@@ -21,6 +21,12 @@ impl From<usize> for Token {
 pub struct ChannelId {
     raw: String,
     delimiter_idx: Option<usize>,
+}
+
+impl std::fmt::Display for ChannelId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Channel<{}>", self.raw)
+    }
 }
 
 impl ChannelId {
