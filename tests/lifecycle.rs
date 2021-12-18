@@ -125,7 +125,7 @@ impl Channel for DefaultChannel {
                 msg_ref: None,
                 join_ref: None,
                 kind: MessageKind::Broadcast,
-                event: message.inner.event.to_string(),
+                event: message.inner.event.clone(),
                 payload: message.inner.payload.clone(),
                 channel_id: message.channel_id().clone(),
                 channel_sender: None,

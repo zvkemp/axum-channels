@@ -2,7 +2,7 @@ use axum::extract::ws::{self, CloseFrame, WebSocket};
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, StreamExt};
 use futures::Stream;
-use message::{DecoratedMessage, MessageKind};
+use message::{DecoratedMessage, Event, MessageKind};
 use registry::{RegistryMessage, RegistrySender};
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -139,10 +139,10 @@ impl PhoenixParser {
         let msg_ref = value[1].as_str().map(Into::into);
 
         let channel_id: ChannelId = value[2].as_str().unwrap().parse().unwrap();
-        let event = value[3].as_str().unwrap().to_string();
+        let event: Event = value[3].as_str().unwrap().into();
         let payload = value[4].to_owned();
 
-        let kind = match event.as_str() {
+        let kind = match event.as_ref() {
             "join" | "phx_join" => MessageKind::JoinRequest,
             "heartbeat" => MessageKind::Heartbeat,
             _ => MessageKind::Event,

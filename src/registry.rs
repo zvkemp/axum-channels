@@ -185,7 +185,7 @@ impl Registry {
             msg_ref: Some(msg_ref.clone()),
             join_ref: None,
             payload,
-            event: "phx_join".to_string(),
+            event: "phx_join".into(),
             channel_sender: None,
         }
         .decorate(token, mailbox_tx);

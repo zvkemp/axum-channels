@@ -22,8 +22,10 @@ pub enum MessageKind {
     Closed,
 }
 
+// Immutable string references - these values are frequently cloned but never mutated.
 pub type MsgRef = Arc<str>;
 pub type JoinRef = Arc<str>;
+pub type Event = Arc<str>;
 
 #[derive(Debug)]
 pub struct Message {
@@ -32,7 +34,7 @@ pub struct Message {
     pub msg_ref: Option<MsgRef>,
     pub join_ref: Option<JoinRef>, // this should probably be conceptually merged with Token
     pub payload: serde_json::Value,
-    pub event: String,
+    pub event: Event,
     pub channel_sender: Option<UnboundedSender<DecoratedMessage>>, // FIXME only used for DidJoin
 }
 
@@ -81,7 +83,7 @@ impl DecoratedMessage {
 
 pub fn broadcast_intercept(
     channel_id: ChannelId,
-    event: String,
+    event: Event,
     payload: serde_json::Value,
 ) -> Message {
     Message {
@@ -98,7 +100,7 @@ pub fn broadcast_intercept(
 pub fn push(
     channel_id: ChannelId,
     msg_ref: Option<MsgRef>,
-    event: String,
+    event: Event,
     payload: serde_json::Value,
 ) -> Message {
     Message {
@@ -112,7 +114,7 @@ pub fn push(
     }
 }
 
-pub fn broadcast(channel_id: ChannelId, event: String, payload: serde_json::Value) -> Message {
+pub fn broadcast(channel_id: ChannelId, event: Event, payload: serde_json::Value) -> Message {
     Message {
         kind: MessageKind::Broadcast,
         channel_id,
@@ -144,13 +146,13 @@ pub(crate) fn did_join(
 pub enum MessageReply {
     Reply(String),
     Broadcast {
-        event: String,
+        event: Event,
         payload: serde_json::Value,
         channel_id: ChannelId,
     },
     Pong(Vec<u8>),
     Event {
-        event: String,
+        event: Event,
         payload: serde_json::Value,
         channel_id: ChannelId,
     },
@@ -163,12 +165,12 @@ pub enum MessageReply {
     },
     BroadcastIntercept {
         channel_id: ChannelId,
-        event: String,
+        event: Event,
         payload: serde_json::Value,
     },
     Push {
         channel_id: ChannelId,
-        event: String,
+        event: Event,
         payload: serde_json::Value,
     },
 }
@@ -192,7 +194,7 @@ impl From<MessageReply> for ws::Message {
                 payload,
                 channel_id,
             } => {
-                let json_value = json!([null, null, channel_id.id(), event, payload]);
+                let json_value = json!([null, null, channel_id.id(), &*event, payload]);
                 ws::Message::Text(serde_json::to_string(&json_value).unwrap())
             }
             MessageReply::Pong(data) => ws::Message::Pong(data),
@@ -219,7 +221,7 @@ impl From<MessageReply> for ws::Message {
                 payload,
                 channel_id,
             } => {
-                let json_value = json!([null, null, channel_id.id(), event, payload]);
+                let json_value = json!([null, null, channel_id.id(), &*event, payload]);
                 ws::Message::Text(serde_json::to_string(&json_value).unwrap())
             }
             MessageReply::BroadcastIntercept { .. } => {
