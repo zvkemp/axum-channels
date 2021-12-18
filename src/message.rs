@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::types::{ChannelId, Token};
 use axum::extract::ws;
 use serde_json::json;
@@ -20,12 +22,15 @@ pub enum MessageKind {
     Closed,
 }
 
+pub type MsgRef = Arc<str>;
+pub type JoinRef = Arc<str>;
+
 #[derive(Debug)]
 pub struct Message {
     pub kind: MessageKind,
     pub channel_id: ChannelId,
-    pub msg_ref: Option<String>,
-    pub join_ref: Option<String>, // this should probably be conceptually merged with Token
+    pub msg_ref: Option<MsgRef>,
+    pub join_ref: Option<JoinRef>, // this should probably be conceptually merged with Token
     pub payload: serde_json::Value,
     pub event: String,
     pub channel_sender: Option<UnboundedSender<DecoratedMessage>>, // FIXME only used for DidJoin
@@ -49,7 +54,7 @@ pub struct DecoratedMessage {
     pub inner: Message,
     pub reply_to: Option<UnboundedSender<Message>>,
     pub ws_reply_to: Option<UnboundedSender<MessageReply>>,
-    pub msg_ref: Option<String>,
+    pub msg_ref: Option<MsgRef>,
 }
 
 lazy_static::lazy_static! {
@@ -92,7 +97,7 @@ pub fn broadcast_intercept(
 
 pub fn push(
     channel_id: ChannelId,
-    msg_ref: Option<String>,
+    msg_ref: Option<MsgRef>,
     event: String,
     payload: serde_json::Value,
 ) -> Message {
@@ -120,7 +125,7 @@ pub fn broadcast(channel_id: ChannelId, event: String, payload: serde_json::Valu
 }
 
 pub(crate) fn did_join(
-    msg_ref: Option<String>,
+    msg_ref: Option<MsgRef>,
     channel_id: ChannelId,
     channel_sender: UnboundedSender<DecoratedMessage>,
 ) -> Message {
@@ -150,10 +155,10 @@ pub enum MessageReply {
         channel_id: ChannelId,
     },
     Heartbeat {
-        msg_ref: String,
+        msg_ref: MsgRef,
     },
     Join {
-        msg_ref: String,
+        msg_ref: MsgRef,
         channel_id: ChannelId,
     },
     BroadcastIntercept {
@@ -194,14 +199,14 @@ impl From<MessageReply> for ws::Message {
             MessageReply::Heartbeat { msg_ref } => {
                 // FIXME: msg_ref is escape-quoted; needs to be just "8" instead of "\"8\""
                 // FIXME: we also need to send a phx_reply for phx_join events
-                let json_value = json!([null, msg_ref, PHX_CHANNEL.id(), "phx_reply", {"response": {}, "status": "ok"}]);
+                let json_value = json!([null, &*msg_ref, PHX_CHANNEL.id(), "phx_reply", {"response": {}, "status": "ok"}]);
                 ws::Message::Text(serde_json::to_string(&json_value).unwrap())
             }
             MessageReply::Join {
                 msg_ref,
                 channel_id,
             } => {
-                let json_value = json!([null, msg_ref, channel_id.id(), "phx_reply", {"response": {}, "status": "ok"}]);
+                let json_value = json!([null, &*msg_ref, channel_id.id(), "phx_reply", {"response": {}, "status": "ok"}]);
                 ws::Message::Text(serde_json::to_string(&json_value).unwrap())
             }
             MessageReply::Event {

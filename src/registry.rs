@@ -1,5 +1,5 @@
 use crate::channel::{Channel, ChannelRunner, NewChannel};
-use crate::message::{DecoratedMessage, Message, MessageKind, MessageReply};
+use crate::message::{DecoratedMessage, Message, MessageKind, MessageReply, MsgRef};
 use crate::spawn_named;
 use crate::types::{ChannelId, Token};
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ impl<T: NewChannel + std::fmt::Debug> ChannelTemplate for T {}
 #[derive(Debug)]
 pub struct Registry {
     channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
-    templates: HashMap<String, Box<dyn ChannelTemplate + Send>>,
+    templates: HashMap<&'static str, Box<dyn ChannelTemplate + Send>>,
     sender: Option<RegistrySender>,
     receiver: Option<RegistryReceiver>,
     last_join_at: HashMap<ChannelId, Instant>,
@@ -50,7 +50,7 @@ pub enum RegistryMessage {
         channel_id: ChannelId,
         mailbox_tx: UnboundedSender<Message>,
         reply_sender: UnboundedSender<MessageReply>,
-        msg_ref: String,
+        msg_ref: MsgRef,
         payload: serde_json::Value,
     },
     // fixme
@@ -131,7 +131,7 @@ impl Registry {
     // channel subscriptions
     pub fn register_template<C: ChannelTemplate + Send + 'static>(
         &mut self,
-        key: String,
+        key: &'static str,
         channel: C,
     ) {
         self.templates
@@ -155,7 +155,7 @@ impl Registry {
         channel_id: ChannelId,
         mailbox_tx: UnboundedSender<Message>,
         ws_reply_to: UnboundedSender<MessageReply>,
-        msg_ref: String,
+        msg_ref: MsgRef,
         payload: serde_json::Value,
     ) {
         info!(
