@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 use serde::Serialize;
 
@@ -19,7 +19,7 @@ impl From<usize> for Token {
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 pub struct ChannelId {
-    raw: String,
+    raw: Arc<str>,
     delimiter_idx: Option<usize>,
 }
 
@@ -49,12 +49,12 @@ impl<'a> FromStr for ChannelId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.char_indices().find(|(_, char)| *char == ':') {
             Some((index, _)) => Ok(ChannelId {
-                raw: s.to_string(),
+                raw: s.into(),
                 delimiter_idx: Some(index),
             }),
 
             None => Ok(ChannelId {
-                raw: s.to_string(),
+                raw: s.into(),
                 delimiter_idx: None,
             }),
         }
