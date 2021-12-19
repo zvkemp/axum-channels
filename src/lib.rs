@@ -242,10 +242,6 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
 
     while let Some(msg) = conn.mailbox_rx.recv().await {
         match &msg.kind {
-            // FIXME: drop this variant?
-            MessageKind::Join => {
-                debug!("joining token={}, channel={}", token, msg.channel_id.id());
-            }
             MessageKind::JoinRequest => {
                 debug!(
                     "sending JoinRequest to registry; channel_id={}",

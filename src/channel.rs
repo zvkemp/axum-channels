@@ -245,7 +245,7 @@ impl ChannelRunner {
             MessageContext {
                 inner:
                     Message {
-                        kind: MessageKind::Join,
+                        kind: MessageKind::JoinRequest,
                         ref channel_id,
                         payload,
                         ..
@@ -287,7 +287,6 @@ impl ChannelRunner {
             .await
         {
             Ok(Some(msg)) => match msg.kind {
-                MessageKind::Join => todo!(),
                 MessageKind::JoinRequest => todo!(),
                 MessageKind::DidJoin => todo!(),
                 MessageKind::Leave => todo!(),
@@ -380,7 +379,7 @@ pub struct MessageContext {
 
 impl MessageContext {
     pub fn is_join(&self) -> bool {
-        matches!(self.inner.kind, MessageKind::Join)
+        matches!(self.inner.kind, MessageKind::JoinRequest)
     }
 
     pub fn is_leave(&self) -> bool {

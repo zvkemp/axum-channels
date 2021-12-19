@@ -179,7 +179,7 @@ impl Registry {
 
         self.set_last_join_at(&channel_id);
         let mut join_msg = Message {
-            kind: MessageKind::Join,
+            kind: MessageKind::JoinRequest,
             channel_id,
             msg_ref: Some(msg_ref.clone()),
             join_ref: None,

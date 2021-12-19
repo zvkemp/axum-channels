@@ -8,7 +8,6 @@ use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug)]
 pub enum MessageKind {
-    Join,
     JoinRequest,
     DidJoin,
     Leave,
