@@ -160,7 +160,9 @@ impl ChannelRunner {
                     tokio::select! {
                         m = self.incoming_receiver.recv() => {
                             match m {
-                                Some(message) => { self.handle_incoming(message).await; }
+                                Some(mut message) => {
+                                    self.handle_incoming(message).await;
+                                }
                                 None => { break; }
                             }
 
@@ -190,7 +192,8 @@ impl ChannelRunner {
         )
     }
 
-    async fn handle_incoming(&mut self, message: DecoratedMessage) {
+    async fn handle_incoming(&mut self, mut message: DecoratedMessage) {
+        message.broadcast = Some(self.broadcast_sender.clone());
         // FIXME: also pass Join to callback to allow channel to do things
         if message.is_leave() {
             self.handle_leave(message).await;
@@ -218,44 +221,7 @@ impl ChannelRunner {
                     debug!("got handle_message => None");
                 }
 
-                Some(msg) => match msg.kind {
-                    MessageKind::Reply | MessageKind::Push => {
-                        if let Some(reply_to) = message.reply_to {
-                            debug!("sending reply...");
-                            if let Err(e) = reply_to.send(msg) {
-                                error!("unexpected error in reply; error={:?}", e);
-                            };
-                        }
-                    }
-                    MessageKind::Broadcast => {
-                        debug!("broadcasting...");
-                        if let Err(e) = self.broadcast_sender.send(MessageReply::Broadcast {
-                            channel_id: msg.channel_id,
-                            event: msg.event,
-                            payload: msg.payload,
-                        }) {
-                            error!("unexpected error in broadcast; err={:?}", e);
-                        };
-                    }
-
-                    MessageKind::BroadcastIntercept => {
-                        debug!("broadcasting...");
-                        if let Err(e) =
-                            self.broadcast_sender
-                                .send(MessageReply::BroadcastIntercept {
-                                    channel_id: msg.channel_id,
-                                    event: msg.event,
-                                    payload: msg.payload,
-                                })
-                        {
-                            error!("unexpected error in broadcast; err={:?}", e);
-                        };
-                    }
-
-                    _ => {
-                        todo!()
-                    }
-                },
+                Some(msg) => message.push(msg),
             }
         }
     }

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use crate::types::{ChannelId, Token};
 use axum::extract::ws;
 use serde_json::json;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{broadcast, mpsc::UnboundedSender};
+use tracing::{debug, error};
 
 #[derive(Debug)]
 pub enum MessageKind {
@@ -45,6 +46,7 @@ impl Message {
             inner: self,
             reply_to: Some(reply_to),
             ws_reply_to: None,
+            broadcast: None,
             msg_ref: None,
         }
     }
@@ -56,6 +58,7 @@ pub struct DecoratedMessage {
     pub inner: Message,
     pub reply_to: Option<UnboundedSender<Message>>,
     pub ws_reply_to: Option<UnboundedSender<MessageReply>>,
+    pub broadcast: Option<broadcast::Sender<MessageReply>>,
     pub msg_ref: Option<MsgRef>,
 }
 
@@ -78,6 +81,54 @@ impl DecoratedMessage {
 
     pub fn channel_id(&self) -> &ChannelId {
         &self.inner.channel_id
+    }
+
+    pub fn push(&self, msg: Message) {
+        match msg.kind {
+            MessageKind::Reply | MessageKind::Push => {
+                if let Some(reply_to) = &self.reply_to {
+                    debug!("sending reply...");
+                    if let Err(e) = reply_to.send(msg) {
+                        error!("unexpected error in reply; error={:?}", e);
+                    };
+                }
+            }
+            MessageKind::Broadcast => {
+                debug!("broadcasting...");
+                if let Err(e) = self
+                    .broadcast
+                    .as_ref()
+                    .unwrap() // FIXME
+                    .send(MessageReply::Broadcast {
+                        channel_id: msg.channel_id,
+                        event: msg.event,
+                        payload: msg.payload,
+                    })
+                {
+                    error!("unexpected error in broadcast; err={:?}", e);
+                };
+            }
+
+            MessageKind::BroadcastIntercept => {
+                debug!("broadcasting...");
+                if let Err(e) =
+                    self.broadcast
+                        .as_ref()
+                        .unwrap()
+                        .send(MessageReply::BroadcastIntercept {
+                            channel_id: msg.channel_id,
+                            event: msg.event,
+                            payload: msg.payload,
+                        })
+                {
+                    error!("unexpected error in broadcast; err={:?}", e);
+                };
+            }
+
+            _ => {
+                todo!()
+            }
+        }
     }
 }
 
