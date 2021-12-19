@@ -16,7 +16,7 @@ use std::time::Duration;
 // - introduce traits for routing messages
 // - introduce traits AddressEndpoint (maybe this is just Channel)
 
-use crate::message::{self, Message, MsgRef};
+use crate::message::{self, Event, Message, MsgRef};
 use crate::message::{MessageKind, MessageReply};
 use crate::registry::{RegistryMessage, RegistrySender};
 use crate::spawn_named;
@@ -84,6 +84,7 @@ pub trait Channel: std::fmt::Debug + Send + Sync {
         Ok(None)
     }
 
+    // FIXME: use MessageContext
     async fn handle_presence(
         &mut self,
         _channel_id: &crate::types::ChannelId,
@@ -192,19 +193,19 @@ impl ChannelRunner {
         )
     }
 
-    async fn handle_incoming(&mut self, mut message: MessageContext) {
-        message.broadcast = Some(self.broadcast_sender.clone());
+    async fn handle_incoming(&mut self, mut context: MessageContext) {
+        context.broadcast = Some(self.broadcast_sender.clone());
         // FIXME: also pass Join to callback to allow channel to do things
-        if message.is_leave() {
-            self.handle_leave(message).await;
+        if context.is_leave() {
+            self.handle_leave(context).await;
         } else {
-            let response = if message.is_intercept() {
-                self.channel.handle_out(&message).await
-            } else if message.is_join() {
-                match self.channel.handle_join(&message).await {
+            let response = if context.is_intercept() {
+                self.channel.handle_out(&context).await
+            } else if context.is_join() {
+                match self.channel.handle_join(&context).await {
                     Ok(join_response) => {
                         debug!("join_response={:#?}", join_response);
-                        self.handle_join(&message).await;
+                        self.handle_join(&context).await;
                         join_response
                     }
                     Err(e) => {
@@ -213,7 +214,7 @@ impl ChannelRunner {
                     }
                 }
             } else {
-                self.channel.handle_message(&message).await
+                self.channel.handle_message(&context).await
             };
 
             match response {
@@ -221,7 +222,7 @@ impl ChannelRunner {
                     debug!("got handle_message => None");
                 }
 
-                Some(msg) => message.push(msg),
+                Some(msg) => context.send(msg),
             }
         }
     }
@@ -230,8 +231,8 @@ impl ChannelRunner {
     // through the locked Registry mutex, though it would be nice not to have to.
     // FIXME: avoid duplicate subscriptions
     // FIXME: add user presence tracking
-    async fn handle_join(&mut self, message: &MessageContext) -> Result<()> {
-        match message {
+    async fn handle_join(&mut self, context: &MessageContext) -> Result<()> {
+        match context {
             MessageContext {
                 inner:
                     Message {
@@ -248,31 +249,26 @@ impl ChannelRunner {
                     ws_reply_to.clone(),
                     tx.clone(),
                     self.broadcast_sender.subscribe(),
-                    &message.token,
+                    &context.token,
                     &self.channel_id,
                 );
 
-                self.presence.track(message.token, payload);
+                self.presence.track(context.token, payload);
                 self.handle_presence(channel_id).await;
 
-                tx.send(message::did_join(
-                    message.msg_ref.clone(),
-                    channel_id.clone(),
-                    self.incoming_sender.clone(),
-                ))
-                .map_err(|e| Error::Send(e.to_string()))
+                tx.send(context.did_join(context.msg_ref.clone(), self.incoming_sender.clone()))
+                    .map_err(|e| Error::Send(e.to_string()))
             }
             _ => {
-                eprintln!("unexpected={:?}", message);
                 todo!("handle errors; this should not happen");
             }
         }
     }
 
-    async fn handle_leave(&mut self, message: MessageContext) {
-        self.presence.leave(message.token);
-        let _ = self.channel.handle_leave(&message).await;
-        let _ = self.handle_presence(message.channel_id()).await;
+    async fn handle_leave(&mut self, context: MessageContext) {
+        self.presence.leave(context.token);
+        let _ = self.channel.handle_leave(&context).await;
+        let _ = self.handle_presence(context.channel_id()).await;
     }
 
     async fn handle_presence(&mut self, channel_id: &crate::types::ChannelId) {
@@ -338,7 +334,15 @@ fn spawn_broadcast_subscriber(
                 {
                     // send Intercepts back to the individual sockets for further processing
                     mailbox_sender
-                        .send(message::broadcast_intercept(channel_id, event, payload))
+                        .send(Message {
+                            channel_id,
+                            kind: MessageKind::BroadcastIntercept,
+                            msg_ref: None,
+                            join_ref: None,
+                            payload,
+                            event,
+                            channel_sender: None,
+                        })
                         .unwrap()
                 } else {
                     // Other messages get sent directly to the websocket writer
@@ -384,7 +388,7 @@ impl MessageContext {
 
     // Replies from the channel trait methods are normally piped through here;
     // additionally, this method is available on the MessageContext argument to those methods.
-    pub fn push(&self, msg: Message) {
+    pub fn send(&self, msg: Message) {
         match msg.kind {
             MessageKind::Reply | MessageKind::Push => {
                 if let Some(reply_to) = &self.reply_to {
@@ -428,6 +432,80 @@ impl MessageContext {
             _ => {
                 todo!()
             }
+        }
+    }
+
+    pub fn broadcast_intercept(&self, event: Event, payload: serde_json::Value) -> Message {
+        Message {
+            join_ref: None,
+            msg_ref: None,
+            kind: MessageKind::BroadcastIntercept,
+            channel_id: self.channel_id().clone(),
+            event,
+            payload,
+            channel_sender: None,
+        }
+    }
+
+    pub fn push(
+        &self,
+        msg_ref: Option<MsgRef>,
+        event: Event,
+        payload: serde_json::Value,
+    ) -> Message {
+        Message {
+            kind: MessageKind::Push,
+            channel_id: self.channel_id().clone(),
+            msg_ref,
+            join_ref: None,
+            payload,
+            event,
+            channel_sender: None,
+        }
+    }
+
+    pub fn reply(
+        &self,
+        msg_ref: Option<MsgRef>,
+        event: Event,
+        payload: serde_json::Value,
+    ) -> Message {
+        Message {
+            kind: MessageKind::Reply,
+            channel_id: self.channel_id().clone(),
+            msg_ref,
+            join_ref: None,
+            payload,
+            event,
+            channel_sender: None,
+        }
+    }
+
+    pub fn broadcast(&self, event: Event, payload: serde_json::Value) -> Message {
+        Message {
+            kind: MessageKind::Broadcast,
+            channel_id: self.channel_id().clone(),
+            msg_ref: None,
+            join_ref: None,
+            payload,
+            event,
+            channel_sender: None,
+        }
+    }
+
+    pub(crate) fn did_join(
+        &self,
+        msg_ref: Option<MsgRef>,
+        channel_sender: UnboundedSender<MessageContext>,
+    ) -> Message {
+        Message {
+            join_ref: None, // FIXME: return the token ID here?
+            kind: MessageKind::DidJoin,
+            msg_ref,
+            event: "phx_join".into(),
+            channel_id: self.channel_id().clone(),
+            channel_sender: Some(channel_sender),
+            payload: json!(null),
         }
     }
 }

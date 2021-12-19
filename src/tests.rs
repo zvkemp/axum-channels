@@ -27,11 +27,15 @@ impl Channel for DefaultChannel {
         channel_id: &ChannelId,
         presence: &Presence,
     ) -> crate::channel::Result<Option<Message>> {
-        Ok(Some(message::broadcast(
-            channel_id.clone(),
-            "presence".into(),
-            serde_json::json!({ "presence": presence.data }),
-        )))
+        Ok(Some(Message {
+            channel_id: channel_id.clone(),
+            event: "presence".into(),
+            payload: serde_json::json!({"presence":presence.data}),
+            kind: MessageKind::Broadcast,
+            msg_ref: None,
+            join_ref: None,
+            channel_sender: None,
+        }))
     }
 }
 

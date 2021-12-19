@@ -56,67 +56,6 @@ lazy_static::lazy_static! {
     pub static ref PHX_CHANNEL: ChannelId = "phoenix".parse().unwrap();
 }
 
-pub fn broadcast_intercept(
-    channel_id: ChannelId,
-    event: Event,
-    payload: serde_json::Value,
-) -> Message {
-    Message {
-        join_ref: None,
-        msg_ref: None,
-        kind: MessageKind::BroadcastIntercept,
-        channel_id,
-        event,
-        payload,
-        channel_sender: None,
-    }
-}
-
-pub fn push(
-    channel_id: ChannelId,
-    msg_ref: Option<MsgRef>,
-    event: Event,
-    payload: serde_json::Value,
-) -> Message {
-    Message {
-        kind: MessageKind::Push,
-        channel_id,
-        msg_ref,
-        join_ref: None,
-        payload,
-        event,
-        channel_sender: None,
-    }
-}
-
-pub fn broadcast(channel_id: ChannelId, event: Event, payload: serde_json::Value) -> Message {
-    Message {
-        kind: MessageKind::Broadcast,
-        channel_id,
-        msg_ref: None,
-        join_ref: None,
-        payload,
-        event,
-        channel_sender: None,
-    }
-}
-
-pub(crate) fn did_join(
-    msg_ref: Option<MsgRef>,
-    channel_id: ChannelId,
-    channel_sender: UnboundedSender<MessageContext>,
-) -> Message {
-    Message {
-        join_ref: None, // FIXME: return the token ID here?
-        kind: MessageKind::DidJoin,
-        msg_ref,
-        event: "phx_join".into(),
-        channel_id,
-        channel_sender: Some(channel_sender),
-        payload: json!(null),
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum MessageReply {
     Reply(String),
