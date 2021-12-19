@@ -15,8 +15,7 @@ pub enum MessageKind {
     Broadcast,
     Heartbeat,
     BroadcastIntercept,
-    Reply, // request-response
-    Push,  // response only
+    Push, // response only; include the original msg_ref to indicate a reply
     PresenceChange,
     BroadcastPresence,
     Closed,
@@ -57,7 +56,6 @@ lazy_static::lazy_static! {
 
 #[derive(Debug, Clone)]
 pub enum MessageReply {
-    Reply(String),
     Broadcast {
         event: Event,
         payload: serde_json::Value,
@@ -89,19 +87,44 @@ pub enum MessageReply {
 }
 
 impl MessageReply {
-    pub fn is_reply(&self) -> bool {
-        matches!(self, MessageReply::Reply(..))
-    }
-
     pub fn is_broadcast(&self) -> bool {
         matches!(self, MessageReply::Broadcast { .. })
     }
 }
 
+impl TryFrom<Message> for MessageReply {
+    type Error = &'static str;
+
+    fn try_from(message: Message) -> Result<Self, Self::Error> {
+        match message.kind {
+            MessageKind::Broadcast => Ok(MessageReply::Broadcast {
+                channel_id: message.channel_id,
+                event: message.event,
+                payload: message.payload,
+            }),
+            MessageKind::BroadcastIntercept => Ok(MessageReply::BroadcastIntercept {
+                channel_id: message.channel_id,
+                event: message.event,
+                payload: message.payload,
+            }),
+            // FIXME: some of these would be valid; others not.
+            MessageKind::Heartbeat => todo!(),
+            MessageKind::JoinRequest => todo!(),
+            MessageKind::DidJoin => todo!(),
+            MessageKind::Leave => todo!(),
+            MessageKind::Event => todo!(),
+            MessageKind::Push => todo!(),
+            MessageKind::PresenceChange => todo!(),
+            MessageKind::BroadcastPresence => todo!(),
+            MessageKind::Closed => todo!(),
+        }
+    }
+}
+
+// FIXME: this is all specific to the Phoenix channel format
 impl From<MessageReply> for ws::Message {
     fn from(msg: MessageReply) -> Self {
         match msg {
-            MessageReply::Reply(text) => ws::Message::Text(text),
             MessageReply::Broadcast {
                 event,
                 payload,

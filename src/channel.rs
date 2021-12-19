@@ -300,7 +300,6 @@ impl ChannelRunner {
                 }
                 MessageKind::Heartbeat => todo!(),
                 MessageKind::BroadcastIntercept => todo!(),
-                MessageKind::Reply => todo!(),
                 MessageKind::Push => todo!(),
                 MessageKind::PresenceChange => todo!(),
                 MessageKind::BroadcastPresence => todo!(),
@@ -398,43 +397,41 @@ impl MessageContext {
     /// additionally, this method is available on the MessageContext argument to those methods.
     pub fn send(&self, msg: Message) {
         match msg.kind {
-            MessageKind::Reply | MessageKind::Push => {
+            MessageKind::Push => {
                 if let Some(reply_to) = &self.reply_to {
                     if let Err(e) = reply_to.send(msg) {
                         error!("unexpected error in reply; error={:?}", e);
                     };
                 }
             }
-            MessageKind::Broadcast => {
+            MessageKind::Broadcast | MessageKind::BroadcastIntercept => {
                 debug!("broadcasting...");
-                if let Err(e) = self
-                    .broadcast
-                    .as_ref()
-                    .unwrap() // FIXME
-                    .send(MessageReply::Broadcast {
-                        channel_id: msg.channel_id,
-                        event: msg.event,
-                        payload: msg.payload,
-                    })
-                {
-                    error!("unexpected error in broadcast; err={:?}", e);
-                };
-            }
 
-            MessageKind::BroadcastIntercept => {
-                debug!("broadcasting...");
-                if let Err(e) =
-                    self.broadcast
-                        .as_ref()
-                        .unwrap()
-                        .send(MessageReply::BroadcastIntercept {
-                            channel_id: msg.channel_id,
-                            event: msg.event,
-                            payload: msg.payload,
-                        })
-                {
-                    error!("unexpected error in broadcast; err={:?}", e);
+                let reply: Option<MessageReply> = match msg.try_into() {
+                    Ok(reply) => Some(reply),
+                    Err(e) => {
+                        error!("could not convert message to broadcast; reason={:?}", e);
+                        None
+                    }
                 };
+
+                if reply.is_some() {
+                    match self.broadcast.as_ref() {
+                        Some(broadcast) => {
+                            if let Err(e) = broadcast.send(reply.unwrap()) {
+                                error!("unexpected error in broadcast; err={:?}", e);
+                            }
+                        }
+
+                        None => {
+                            error!(
+                            "No broadcast channel found in this context; channel_id={}, kind={:?}",
+                            self.channel_id(),
+                            self.inner.kind
+                        );
+                        }
+                    }
+                }
             }
 
             _ => {
@@ -457,29 +454,13 @@ impl MessageContext {
 
     pub fn push(
         &self,
+        // include a msg_ref to indicate a reply
         msg_ref: Option<MsgRef>,
         event: Event,
         payload: serde_json::Value,
     ) -> Message {
         Message {
             kind: MessageKind::Push,
-            channel_id: self.channel_id().clone(),
-            msg_ref,
-            join_ref: None,
-            payload,
-            event,
-            channel_sender: None,
-        }
-    }
-
-    pub fn reply(
-        &self,
-        msg_ref: Option<MsgRef>,
-        event: Event,
-        payload: serde_json::Value,
-    ) -> Message {
-        Message {
-            kind: MessageKind::Reply,
             channel_id: self.channel_id().clone(),
             msg_ref,
             join_ref: None,

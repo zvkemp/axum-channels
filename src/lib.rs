@@ -264,6 +264,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                     .entry(msg.channel_id.clone())
                     .or_insert_with(|| msg.channel_sender.unwrap());
 
+                // FIXME: payload here?
                 reply_sender
                     .send(MessageReply::Join {
                         channel_id: msg.channel_id,
@@ -273,10 +274,6 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
             }
 
             MessageKind::Leave => todo!(),
-
-            MessageKind::Reply => {
-                todo!()
-            }
 
             MessageKind::Broadcast => {
                 todo!() // This probably shouldn't be sent here
