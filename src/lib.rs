@@ -1,8 +1,9 @@
 use axum::extract::ws::{self, CloseFrame, WebSocket};
+use channel::MessageContext;
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, StreamExt};
 use futures::Stream;
-use message::{DecoratedMessage, Event, MessageKind};
+use message::{Event, MessageKind};
 use registry::{RegistryMessage, RegistrySender};
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -81,7 +82,7 @@ pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: Reg
 // to the intended channels.
 #[derive(Debug)]
 pub struct ReaderSubscriptions {
-    channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
+    channels: HashMap<ChannelId, UnboundedSender<MessageContext>>,
     token: Token,
     mailbox_tx: UnboundedSender<Message>,
 }
@@ -95,7 +96,7 @@ impl ReaderSubscriptions {
         }
     }
 
-    pub fn insert(&mut self, channel_id: ChannelId, sender: UnboundedSender<DecoratedMessage>) {
+    pub fn insert(&mut self, channel_id: ChannelId, sender: UnboundedSender<MessageContext>) {
         self.channels.entry(channel_id).or_insert(sender);
     }
 }

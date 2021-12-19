@@ -5,8 +5,8 @@ use axum::{
     AddExtensionLayer, Router,
 };
 use axum_channels::{
-    channel::Channel,
-    message::{DecoratedMessage, Message, MessageKind},
+    channel::{Channel, MessageContext},
+    message::{Message, MessageKind},
     registry::{Registry, RegistrySender},
     ConnFormat,
 };
@@ -119,7 +119,7 @@ struct DefaultChannel;
 
 #[axum::async_trait]
 impl Channel for DefaultChannel {
-    async fn handle_message(&mut self, message: &DecoratedMessage) -> Option<Message> {
+    async fn handle_message(&mut self, message: &MessageContext) -> Option<Message> {
         match &message.inner.kind {
             MessageKind::Event => Some(Message {
                 msg_ref: None,
@@ -136,7 +136,7 @@ impl Channel for DefaultChannel {
 
     async fn handle_join(
         &mut self,
-        _message: &DecoratedMessage,
+        _message: &MessageContext,
     ) -> Result<Option<Message>, axum_channels::channel::Error> {
         Ok(None)
     }

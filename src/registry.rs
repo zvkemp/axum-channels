@@ -1,5 +1,5 @@
-use crate::channel::{Channel, ChannelRunner, NewChannel};
-use crate::message::{DecoratedMessage, Message, MessageKind, MessageReply, MsgRef};
+use crate::channel::{Channel, ChannelRunner, MessageContext, NewChannel};
+use crate::message::{Message, MessageKind, MessageReply, MsgRef};
 use crate::spawn_named;
 use crate::types::{ChannelId, Token};
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ impl<T: NewChannel + std::fmt::Debug> ChannelTemplate for T {}
 
 #[derive(Debug)]
 pub struct Registry {
-    channels: HashMap<ChannelId, UnboundedSender<DecoratedMessage>>,
+    channels: HashMap<ChannelId, UnboundedSender<MessageContext>>,
     templates: HashMap<&'static str, Box<dyn ChannelTemplate + Send>>,
     sender: Option<RegistrySender>,
     receiver: Option<RegistryReceiver>,
@@ -44,7 +44,7 @@ pub enum Error {
 }
 
 pub enum RegistryMessage {
-    Dispatch(DecoratedMessage),
+    Dispatch(MessageContext),
     JoinRequest {
         token: Token,
         channel_id: ChannelId,
@@ -141,7 +141,7 @@ impl Registry {
 
     /// Send a message to a channel. Because the reigstry is typically behind a mutex,
     /// this should be reserved for sockets that don't already have a copy of the channel sender.
-    fn dispatch(&self, message: DecoratedMessage) -> Result<(), Error> {
+    fn dispatch(&self, message: MessageContext) -> Result<(), Error> {
         self.channels
             .get(message.channel_id())
             .ok_or(Error::NoChannel)?

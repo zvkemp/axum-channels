@@ -16,7 +16,7 @@ use std::time::Duration;
 // - introduce traits for routing messages
 // - introduce traits AddressEndpoint (maybe this is just Channel)
 
-use crate::message::{self, DecoratedMessage, Message};
+use crate::message::{self, Message, MsgRef};
 use crate::message::{MessageKind, MessageReply};
 use crate::registry::{RegistryMessage, RegistrySender};
 use crate::spawn_named;
@@ -29,8 +29,8 @@ use tokio::time::interval;
 use tracing::{debug, error, warn};
 
 pub struct ChannelRunner {
-    incoming_sender: UnboundedSender<DecoratedMessage>,
-    incoming_receiver: UnboundedReceiver<DecoratedMessage>,
+    incoming_sender: UnboundedSender<MessageContext>,
+    incoming_receiver: UnboundedReceiver<MessageContext>,
     broadcast_sender: broadcast::Sender<MessageReply>,
     channel: Box<dyn Channel>,
     presence: Presence,
@@ -70,17 +70,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[axum::async_trait]
 pub trait Channel: std::fmt::Debug + Send + Sync {
-    async fn handle_message(&mut self, _message: &DecoratedMessage) -> Option<Message> {
+    async fn handle_message(&mut self, _context: &MessageContext) -> Option<Message> {
         None
     }
 
     // receives a BroadcastIntercept for socket-specific processing
-    async fn handle_out(&mut self, _message: &DecoratedMessage) -> Option<Message> {
+    async fn handle_out(&mut self, _context: &MessageContext) -> Option<Message> {
         None
     }
 
     // authorize new socket connections
-    async fn handle_join(&mut self, _message: &DecoratedMessage) -> Result<Option<Message>> {
+    async fn handle_join(&mut self, _context: &MessageContext) -> Result<Option<Message>> {
         Ok(None)
     }
 
@@ -92,11 +92,11 @@ pub trait Channel: std::fmt::Debug + Send + Sync {
         Ok(None)
     }
 
-    async fn handle_info(&mut self, _message: &Message) -> Result<Option<Message>> {
+    async fn handle_info(&mut self, _context: &MessageContext) -> Result<Option<Message>> {
         Ok(None)
     }
 
-    async fn handle_leave(&mut self, _message: &DecoratedMessage) -> Result<Option<Message>> {
+    async fn handle_leave(&mut self, _context: &MessageContext) -> Result<Option<Message>> {
         Ok(None)
     }
 }
@@ -134,7 +134,7 @@ impl ChannelRunner {
         channel_id: ChannelId,
         channel: Box<dyn Channel>,
         registry_sender: RegistrySender,
-    ) -> (JoinHandle<()>, UnboundedSender<DecoratedMessage>) {
+    ) -> (JoinHandle<()>, UnboundedSender<MessageContext>) {
         let channel = Self::new(channel_id, channel);
         let sender = channel.incoming_sender.clone();
 
@@ -192,7 +192,7 @@ impl ChannelRunner {
         )
     }
 
-    async fn handle_incoming(&mut self, mut message: DecoratedMessage) {
+    async fn handle_incoming(&mut self, mut message: MessageContext) {
         message.broadcast = Some(self.broadcast_sender.clone());
         // FIXME: also pass Join to callback to allow channel to do things
         if message.is_leave() {
@@ -230,9 +230,9 @@ impl ChannelRunner {
     // through the locked Registry mutex, though it would be nice not to have to.
     // FIXME: avoid duplicate subscriptions
     // FIXME: add user presence tracking
-    async fn handle_join(&mut self, message: &DecoratedMessage) -> Result<()> {
+    async fn handle_join(&mut self, message: &MessageContext) -> Result<()> {
         match message {
-            DecoratedMessage {
+            MessageContext {
                 inner:
                     Message {
                         kind: MessageKind::Join,
@@ -269,7 +269,7 @@ impl ChannelRunner {
         }
     }
 
-    async fn handle_leave(&mut self, message: DecoratedMessage) {
+    async fn handle_leave(&mut self, message: MessageContext) {
         self.presence.leave(message.token);
         let _ = self.channel.handle_leave(&message).await;
         let _ = self.handle_presence(message.channel_id()).await;
@@ -351,4 +351,83 @@ fn spawn_broadcast_subscriber(
         },
         &format!("broadcast:{}:{}", channel_id, token),
     )
+}
+
+// Sort of a hybrid between a channel and a message;
+// i.e. a message with channel/socket context around it
+#[derive(Debug)]
+pub struct MessageContext {
+    pub token: Token,
+    pub inner: Message,
+    pub reply_to: Option<UnboundedSender<Message>>,
+    pub ws_reply_to: Option<UnboundedSender<MessageReply>>,
+    pub broadcast: Option<broadcast::Sender<MessageReply>>,
+    pub msg_ref: Option<MsgRef>,
+}
+
+impl MessageContext {
+    pub fn is_join(&self) -> bool {
+        matches!(self.inner.kind, MessageKind::Join)
+    }
+
+    pub fn is_leave(&self) -> bool {
+        matches!(self.inner.kind, MessageKind::Leave)
+    }
+
+    pub fn is_intercept(&self) -> bool {
+        matches!(self.inner.kind, MessageKind::BroadcastIntercept)
+    }
+
+    pub fn channel_id(&self) -> &ChannelId {
+        &self.inner.channel_id
+    }
+
+    // Replies from the channel trait methods are normally piped through here;
+    // additionally, this method is available on the MessageContext argument to those methods.
+    pub fn push(&self, msg: Message) {
+        match msg.kind {
+            MessageKind::Reply | MessageKind::Push => {
+                if let Some(reply_to) = &self.reply_to {
+                    if let Err(e) = reply_to.send(msg) {
+                        error!("unexpected error in reply; error={:?}", e);
+                    };
+                }
+            }
+            MessageKind::Broadcast => {
+                debug!("broadcasting...");
+                if let Err(e) = self
+                    .broadcast
+                    .as_ref()
+                    .unwrap() // FIXME
+                    .send(MessageReply::Broadcast {
+                        channel_id: msg.channel_id,
+                        event: msg.event,
+                        payload: msg.payload,
+                    })
+                {
+                    error!("unexpected error in broadcast; err={:?}", e);
+                };
+            }
+
+            MessageKind::BroadcastIntercept => {
+                debug!("broadcasting...");
+                if let Err(e) =
+                    self.broadcast
+                        .as_ref()
+                        .unwrap()
+                        .send(MessageReply::BroadcastIntercept {
+                            channel_id: msg.channel_id,
+                            event: msg.event,
+                            payload: msg.payload,
+                        })
+                {
+                    error!("unexpected error in broadcast; err={:?}", e);
+                };
+            }
+
+            _ => {
+                todo!()
+            }
+        }
+    }
 }

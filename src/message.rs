@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
+use crate::channel::MessageContext;
 use crate::types::{ChannelId, Token};
 use axum::extract::ws;
 use serde_json::json;
-use tokio::sync::{broadcast, mpsc::UnboundedSender};
-use tracing::{debug, error};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug)]
 pub enum MessageKind {
@@ -36,12 +36,12 @@ pub struct Message {
     pub join_ref: Option<JoinRef>, // this should probably be conceptually merged with Token
     pub payload: serde_json::Value,
     pub event: Event,
-    pub channel_sender: Option<UnboundedSender<DecoratedMessage>>, // FIXME only used for DidJoin
+    pub channel_sender: Option<UnboundedSender<MessageContext>>, // FIXME only used for DidJoin
 }
 
 impl Message {
-    pub fn decorate(self, token: Token, reply_to: UnboundedSender<Message>) -> DecoratedMessage {
-        DecoratedMessage {
+    pub fn decorate(self, token: Token, reply_to: UnboundedSender<Message>) -> MessageContext {
+        MessageContext {
             token,
             inner: self,
             reply_to: Some(reply_to),
@@ -52,84 +52,8 @@ impl Message {
     }
 }
 
-#[derive(Debug)]
-pub struct DecoratedMessage {
-    pub token: Token,
-    pub inner: Message,
-    pub reply_to: Option<UnboundedSender<Message>>,
-    pub ws_reply_to: Option<UnboundedSender<MessageReply>>,
-    pub broadcast: Option<broadcast::Sender<MessageReply>>,
-    pub msg_ref: Option<MsgRef>,
-}
-
 lazy_static::lazy_static! {
     pub static ref PHX_CHANNEL: ChannelId = "phoenix".parse().unwrap();
-}
-
-impl DecoratedMessage {
-    pub fn is_join(&self) -> bool {
-        matches!(self.inner.kind, MessageKind::Join)
-    }
-
-    pub fn is_leave(&self) -> bool {
-        matches!(self.inner.kind, MessageKind::Leave)
-    }
-
-    pub fn is_intercept(&self) -> bool {
-        matches!(self.inner.kind, MessageKind::BroadcastIntercept)
-    }
-
-    pub fn channel_id(&self) -> &ChannelId {
-        &self.inner.channel_id
-    }
-
-    pub fn push(&self, msg: Message) {
-        match msg.kind {
-            MessageKind::Reply | MessageKind::Push => {
-                if let Some(reply_to) = &self.reply_to {
-                    debug!("sending reply...");
-                    if let Err(e) = reply_to.send(msg) {
-                        error!("unexpected error in reply; error={:?}", e);
-                    };
-                }
-            }
-            MessageKind::Broadcast => {
-                debug!("broadcasting...");
-                if let Err(e) = self
-                    .broadcast
-                    .as_ref()
-                    .unwrap() // FIXME
-                    .send(MessageReply::Broadcast {
-                        channel_id: msg.channel_id,
-                        event: msg.event,
-                        payload: msg.payload,
-                    })
-                {
-                    error!("unexpected error in broadcast; err={:?}", e);
-                };
-            }
-
-            MessageKind::BroadcastIntercept => {
-                debug!("broadcasting...");
-                if let Err(e) =
-                    self.broadcast
-                        .as_ref()
-                        .unwrap()
-                        .send(MessageReply::BroadcastIntercept {
-                            channel_id: msg.channel_id,
-                            event: msg.event,
-                            payload: msg.payload,
-                        })
-                {
-                    error!("unexpected error in broadcast; err={:?}", e);
-                };
-            }
-
-            _ => {
-                todo!()
-            }
-        }
-    }
 }
 
 pub fn broadcast_intercept(
@@ -180,7 +104,7 @@ pub fn broadcast(channel_id: ChannelId, event: Event, payload: serde_json::Value
 pub(crate) fn did_join(
     msg_ref: Option<MsgRef>,
     channel_id: ChannelId,
-    channel_sender: UnboundedSender<DecoratedMessage>,
+    channel_sender: UnboundedSender<MessageContext>,
 ) -> Message {
     Message {
         join_ref: None, // FIXME: return the token ID here?
