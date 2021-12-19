@@ -2,7 +2,7 @@ use axum::extract::ws::{self, CloseFrame, WebSocket};
 use channel::MessageContext;
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, StreamExt};
-use futures::Stream;
+use futures::{Sink, Stream};
 use message::{Event, MessageKind};
 use registry::{RegistryMessage, RegistrySender};
 use std::collections::HashMap;
@@ -46,7 +46,19 @@ fn get_token() -> Token {
     COUNTER.fetch_add(1, Ordering::Relaxed).into()
 }
 
-pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: RegistrySender) {
+// pub async fn handle_connect(socket: WebSocket, format: ConnFormat, registry: RegistrySender) {
+//     handle_connect_inner(socket, format, registry)
+// }
+
+pub async fn handle_connect<
+    S: Sink<ws::Message> + Stream<Item = Result<ws::Message, axum::Error>> + Send + 'static,
+>(
+    socket: S,
+    format: ConnFormat,
+    registry: RegistrySender,
+) where
+    <S as futures::Sink<ws::Message>>::Error: std::fmt::Debug,
+{
     let token = get_token();
 
     // the raw websocket stream
@@ -327,13 +339,15 @@ impl Display for ParseError {
 impl std::error::Error for ParseError {}
 
 // FIXME: how to genericize the writer?
-async fn write(
+async fn write<S: Sink<ws::Message>>(
     _token: Token,
-    _format: ConnFormat,
-    mut writer: SplitSink<WebSocket, ws::Message>,
+    _format: ConnFormat, // FIXME: use this
+    mut writer: SplitSink<S, ws::Message>,
     mut receiver: UnboundedReceiver<MessageReply>,
     mailbox_tx: UnboundedSender<Message>,
-) {
+) where
+    <S as Sink<ws::Message>>::Error: std::fmt::Debug,
+{
     while let Some(msg) = receiver.recv().await {
         let ws_msg: ws::Message = msg.into();
 

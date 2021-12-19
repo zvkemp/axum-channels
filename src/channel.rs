@@ -68,18 +68,20 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+// FIXME: design: there's a conceptual overlap between MessageKind and these individual message handler callbacks
 #[axum::async_trait]
 pub trait Channel: std::fmt::Debug + Send + Sync {
     async fn handle_message(&mut self, _context: &MessageContext) -> Option<Message> {
         None
     }
 
-    // receives a BroadcastIntercept for socket-specific processing
+    /// receives a BroadcastIntercept for socket-specific processing
     async fn handle_out(&mut self, _context: &MessageContext) -> Option<Message> {
         None
     }
 
-    // authorize new socket connections
+    /// authorize new socket connections; return Ok(..) to allow the socket to join the channel, with
+    /// an optional response
     async fn handle_join(&mut self, _context: &MessageContext) -> Result<Option<Message>> {
         Ok(None)
     }
@@ -135,16 +137,23 @@ impl ChannelRunner {
         channel_id: ChannelId,
         channel: Box<dyn Channel>,
         registry_sender: RegistrySender,
+        inactivity_timeout: bool,
     ) -> (JoinHandle<()>, UnboundedSender<MessageContext>) {
         let channel = Self::new(channel_id, channel);
         let sender = channel.incoming_sender.clone();
 
-        let handle = channel.start(registry_sender);
+        let handle = channel.start(registry_sender, inactivity_timeout);
 
         (handle, sender)
     }
 
-    pub fn start(mut self, registry_sender: RegistrySender) -> JoinHandle<()> {
+    // If inactivity_timeout is false (default false for calls to add_channel) the
+    // inactivity tick is ignored.
+    pub fn start(
+        mut self,
+        registry_sender: RegistrySender,
+        inactivity_timeout: bool,
+    ) -> JoinHandle<()> {
         let channel_id = self.channel_id.clone();
         debug!("starting {}", channel_id);
 
@@ -173,7 +182,7 @@ impl ChannelRunner {
                             warn!("[{:?}] inactivity check {:?}", self.channel_id, self.presence);
 
                             // FIXME: we shouldn't shut down for manually-added channels (ie, those not lazily created from a template)
-                            if self.presence.is_empty() {
+                            if inactivity_timeout && self.presence.is_empty() {
                                 let (tx, rx) = oneshot::channel();
                                 // Inform the registry that we plan to disable this channel
                                 registry_sender.send(RegistryMessage::Inactivity(self.channel_id.clone(), tx));
@@ -386,8 +395,8 @@ impl MessageContext {
         &self.inner.channel_id
     }
 
-    // Replies from the channel trait methods are normally piped through here;
-    // additionally, this method is available on the MessageContext argument to those methods.
+    /// Replies from the channel trait methods are normally piped through here;
+    /// additionally, this method is available on the MessageContext argument to those methods.
     pub fn send(&self, msg: Message) {
         match msg.kind {
             MessageKind::Reply | MessageKind::Push => {

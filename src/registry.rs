@@ -8,7 +8,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use tracing::info;
+use tracing::{error, info};
 
 pub trait ChannelTemplate: NewChannel + std::fmt::Debug {}
 
@@ -164,15 +164,14 @@ impl Registry {
         );
 
         if self.channels.get(&channel_id).is_none() {
-            // let template = self.templates.get(channel_id.key().unwrap());
-            match self.templates.get(channel_id.key().unwrap()) {
-                // FIXME: no unwrap
+            match channel_id.key().and_then(|key| self.templates.get(key)) {
                 Some(_) => {
                     self.add_channel_from_template(channel_id.clone());
                 }
 
                 None => {
-                    eprintln!("registered behavior not found for {:?}", channel_id);
+                    error!("registered behavior not found for {:?}", channel_id);
+                    // FIXME: send an error response to the socket here
                     return;
                 }
             }
@@ -204,14 +203,25 @@ impl Registry {
     fn add_channel_from_template(&mut self, channel_id: ChannelId) {
         let template = self.templates.get(channel_id.key().unwrap()).unwrap();
         let channel = template.new_channel(channel_id.clone());
-        self.add_channel(channel_id, channel);
+        self.add_channel_inner(channel_id, channel, true)
     }
 
     pub fn add_channel(&mut self, channel_id: ChannelId, channel: Box<dyn Channel>) {
+        self.add_channel_inner(channel_id, channel, false)
+    }
+
+    // FIXME: change inactivity_timeout to a Option<Duration>
+    fn add_channel_inner(
+        &mut self,
+        channel_id: ChannelId,
+        channel: Box<dyn Channel>,
+        inactivity_timeout: bool,
+    ) {
         let (_, channel_sender) = ChannelRunner::spawn(
             channel_id.clone(),
             channel,
             self.sender.as_ref().unwrap().clone(),
+            inactivity_timeout,
         );
         self.channels.entry(channel_id).or_insert(channel_sender);
     }
