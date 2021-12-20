@@ -22,7 +22,8 @@ use crate::registry::{RegistryMessage, RegistrySender};
 use crate::spawn_named;
 use crate::types::{ChannelId, Token};
 use serde_json::json;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
@@ -64,6 +65,8 @@ pub enum Error {
     Join { reason: String },
     Send(String),
     Other(String),
+    NoReplyChannel,
+    NoBroadcastChannel,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -231,15 +234,16 @@ impl ChannelRunner {
                     debug!("got handle_message => None");
                 }
 
-                Some(msg) => context.send(msg),
+                Some(msg) => {
+                    if let Err(e) = context.send(msg) {
+                        error!("error sending message; {:?}", e);
+                    }
+                }
             }
         }
     }
 
-    // The volume of join requests would probably be sufficient to have everything go
-    // through the locked Registry mutex, though it would be nice not to have to.
     // FIXME: avoid duplicate subscriptions
-    // FIXME: add user presence tracking
     async fn handle_join(&mut self, context: &MessageContext) -> Result<()> {
         match context {
             MessageContext {
@@ -265,8 +269,9 @@ impl ChannelRunner {
                 self.presence.track(context.token, payload);
                 self.handle_presence(channel_id).await;
 
-                tx.send(context.did_join(context.msg_ref.clone(), self.incoming_sender.clone()))
-                    .map_err(|e| Error::Send(e.to_string()))
+                context
+                    .did_join(context.msg_ref.clone(), self.incoming_sender.clone())
+                    .map_err(Into::into)
             }
             _ => {
                 todo!("handle errors; this should not happen");
@@ -395,52 +400,43 @@ impl MessageContext {
 
     /// Replies from the channel trait methods are normally piped through here;
     /// additionally, this method is available on the MessageContext argument to those methods.
-    pub fn send(&self, msg: Message) {
+    pub fn send(&self, msg: Message) -> Result<()> {
         match msg.kind {
-            MessageKind::Push => {
-                if let Some(reply_to) = &self.reply_to {
-                    if let Err(e) = reply_to.send(msg) {
-                        error!("unexpected error in reply; error={:?}", e);
-                    };
-                }
+            MessageKind::Push | MessageKind::DidJoin => {
+                let reply_to = &self.reply_to.as_ref().ok_or(Error::NoReplyChannel)?;
+                reply_to
+                    .send(msg)
+                    .map_err(|e| Error::Send(format!("{:?}", e)))
             }
             MessageKind::Broadcast | MessageKind::BroadcastIntercept => {
                 debug!("broadcasting...");
 
-                let reply: Option<MessageReply> = match msg.try_into() {
-                    Ok(reply) => Some(reply),
-                    Err(e) => {
-                        error!("could not convert message to broadcast; reason={:?}", e);
-                        None
-                    }
-                };
+                let reply: MessageReply = msg
+                    .try_into()
+                    .map_err(|e| Error::Other(format!("{:?}", e)))?;
 
-                if reply.is_some() {
-                    match self.broadcast.as_ref() {
-                        Some(broadcast) => {
-                            if let Err(e) = broadcast.send(reply.unwrap()) {
-                                error!("unexpected error in broadcast; err={:?}", e);
-                            }
-                        }
+                match self.broadcast.as_ref() {
+                    Some(broadcast) => broadcast
+                        .send(reply)
+                        .map(|_| ())
+                        .map_err(|e| Error::Send(format!("{:?}", e))),
 
-                        None => {
-                            error!(
-                            "No broadcast channel found in this context; channel_id={}, kind={:?}",
-                            self.channel_id(),
-                            self.inner.kind
-                        );
-                        }
-                    }
+                    None => Err(Error::NoBroadcastChannel),
                 }
             }
 
-            _ => {
-                todo!()
-            }
+            k => Err(Error::Send(format!(
+                "unsupported message kind in MessageContext::send; kind={:?}",
+                k,
+            ))),
         }
     }
 
-    pub fn broadcast_intercept(&self, event: Event, payload: serde_json::Value) -> Message {
+    pub fn broadcast_intercept(&self, event: Event, payload: serde_json::Value) -> Result<()> {
+        self.send(self.build_broadcast_intercept(event, payload))
+    }
+
+    pub fn build_broadcast_intercept(&self, event: Event, payload: serde_json::Value) -> Message {
         Message {
             join_ref: None,
             msg_ref: None,
@@ -458,6 +454,16 @@ impl MessageContext {
         msg_ref: Option<MsgRef>,
         event: Event,
         payload: serde_json::Value,
+    ) -> Result<()> {
+        self.send(self.build_push(msg_ref, event, payload))
+    }
+
+    pub fn build_push(
+        &self,
+        // include a msg_ref to indicate a reply
+        msg_ref: Option<MsgRef>,
+        event: Event,
+        payload: serde_json::Value,
     ) -> Message {
         Message {
             kind: MessageKind::Push,
@@ -470,7 +476,11 @@ impl MessageContext {
         }
     }
 
-    pub fn broadcast(&self, event: Event, payload: serde_json::Value) -> Message {
+    pub fn broadcast(&self, event: Event, payload: serde_json::Value) -> Result<()> {
+        self.send(self.build_broadcast(event, payload))
+    }
+
+    pub fn build_broadcast(&self, event: Event, payload: serde_json::Value) -> Message {
         Message {
             kind: MessageKind::Broadcast,
             channel_id: self.channel_id().clone(),
@@ -483,6 +493,17 @@ impl MessageContext {
     }
 
     pub(crate) fn did_join(
+        &self,
+        msg_ref: Option<MsgRef>,
+        channel_sender: UnboundedSender<MessageContext>,
+    ) -> Result<()> {
+        self.send(self.build_did_join(msg_ref, channel_sender))
+            .unwrap();
+
+        Ok(())
+    }
+
+    pub(crate) fn build_did_join(
         &self,
         msg_ref: Option<MsgRef>,
         channel_sender: UnboundedSender<MessageContext>,

@@ -157,7 +157,7 @@ impl Channel for StatefulChannel {
         &mut self,
         context: &MessageContext,
     ) -> crate::channel::Result<Option<Message>> {
-        Ok(Some(context.push(
+        Ok(Some(context.build_push(
             None,
             "join_info".into(),
             serde_json::json!({"token": context.token }),
