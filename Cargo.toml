@@ -16,6 +16,7 @@ tokio-util = "*"
 tracing = "*"
 http = "*"
 lazy_static = "*"
+snafu = "0.7"
 
 [dev-dependencies]
 tokio-tungstenite = "*"

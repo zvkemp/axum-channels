@@ -1,13 +1,16 @@
-use axum::extract::ws::{self, CloseFrame, WebSocket};
+use axum::extract::ws::{self, CloseFrame};
 use channel::MessageContext;
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, StreamExt};
 use futures::{Sink, Stream};
 use message::{Event, MessageKind};
 use registry::{RegistryMessage, RegistrySender};
+use snafu::ResultExt;
+use snafu::Snafu;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, warn};
 use types::Token;
@@ -142,17 +145,30 @@ fn parse_message<'a>(
     }
 }
 
+#[derive(Debug, Snafu)]
+pub enum ParseError {
+    #[snafu(context(false))]
+    Json {
+        source: serde_json::Error,
+    },
+    MissingChannelId,
+    MissingEvent,
+}
+
 struct PhoenixParser;
 
 impl PhoenixParser {
     pub fn from_str(input: &str) -> Result<Message, ParseError> {
-        let value: serde_json::Value = serde_json::from_str(input).unwrap();
+        let value: serde_json::Value = serde_json::from_str(input)?;
 
         let join_ref = value[0].as_str().map(Into::into);
         let msg_ref = value[1].as_str().map(Into::into);
 
-        let channel_id: ChannelId = value[2].as_str().unwrap().parse().unwrap();
-        let event: Event = value[3].as_str().unwrap().into();
+        let channel_id: ChannelId = value[2]
+            .as_str()
+            .ok_or(ParseError::MissingChannelId)?
+            .into();
+        let event: Event = value[3].as_str().ok_or(ParseError::MissingEvent)?.into();
         let payload = value[4].to_owned();
 
         let kind = match event.as_ref() {
@@ -176,7 +192,7 @@ impl PhoenixParser {
 fn handle_close(mailbox_tx: UnboundedSender<Message>, _close_frame: Option<CloseFrame>) {
     if let Err(e) = mailbox_tx.send(Message {
         kind: MessageKind::Closed,
-        channel_id: "_closed".parse().unwrap(),
+        channel_id: "_closed".into(),
         msg_ref: None,
         join_ref: None,
         payload: serde_json::Value::Null,
@@ -187,6 +203,20 @@ fn handle_close(mailbox_tx: UnboundedSender<Message>, _close_frame: Option<Close
     }
 }
 
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(context(false))]
+    Registry {
+        source: registry::Error,
+    },
+    RegistrySend {
+        source: SendError<RegistryMessage>,
+    },
+    ReplySend {
+        source: SendError<MessageReply>,
+    },
+}
+
 // reading data from remote
 // FIXME: continue genericizing this
 async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send + 'static>(
@@ -195,7 +225,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
     mut ws_receiver: S,
     reply_sender: UnboundedSender<MessageReply>,
     registry_sender: RegistrySender,
-) {
+) -> Result<(), Error> {
     let mut subscriptions = ReaderSubscriptions::new(token, conn.mailbox_tx.clone());
 
     let format = conn.format;
@@ -248,14 +278,16 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                     msg.channel_id.id()
                 );
 
-                registry_sender.send(RegistryMessage::JoinRequest {
-                    token,
-                    channel_id: msg.channel_id,
-                    mailbox_tx: conn.mailbox_tx.clone(),
-                    reply_sender: reply_sender.clone(),
-                    msg_ref: msg.msg_ref.unwrap(),
-                    payload: msg.payload,
-                });
+                registry_sender
+                    .send(RegistryMessage::JoinRequest {
+                        token,
+                        channel_id: msg.channel_id,
+                        mailbox_tx: conn.mailbox_tx.clone(),
+                        reply_sender: reply_sender.clone(),
+                        msg_ref: msg.msg_ref.unwrap(),
+                        payload: msg.payload,
+                    })
+                    .context(RegistrySendSnafu)?;
             }
             MessageKind::DidJoin => {
                 debug!("received join confirmation");
@@ -270,7 +302,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                         channel_id: msg.channel_id,
                         msg_ref: msg.msg_ref.unwrap(),
                     })
-                    .unwrap();
+                    .context(ReplySendSnafu)?;
             }
 
             MessageKind::Leave => todo!(),
@@ -298,7 +330,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                     .send(MessageReply::Heartbeat {
                         msg_ref: msg.msg_ref.unwrap(),
                     })
-                    .unwrap();
+                    .context(ReplySendSnafu)?;
             }
 
             MessageKind::Push => {
@@ -308,28 +340,17 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                         event: msg.event,
                         payload: msg.payload,
                     })
-                    .unwrap();
+                    .context(ReplySendSnafu)?;
             }
 
             MessageKind::Closed => {
-                return;
+                break;
             }
         }
     }
-}
 
-#[derive(Debug)]
-pub struct ParseError {
-    message: Option<String>,
+    Ok(())
 }
-
-impl Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl std::error::Error for ParseError {}
 
 // FIXME: how to genericize the writer?
 async fn write<S: Sink<ws::Message>>(

@@ -2,6 +2,7 @@ use crate::channel::{Channel, ChannelRunner, MessageContext, NewChannel};
 use crate::message::{Message, MessageKind, MessageReply, MsgRef};
 use crate::spawn_named;
 use crate::types::{ChannelId, Token};
+use snafu::Snafu;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -37,12 +38,14 @@ impl Default for Registry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum Error {
     NoChannel,
+    NoTemplate,
     Transport,
 }
 
+#[derive(Debug)]
 pub enum RegistryMessage {
     Dispatch(MessageContext),
     JoinRequest {
@@ -73,7 +76,9 @@ impl Registry {
         let handle = spawn_named(
             async move {
                 while let Some(msg) = receiver.recv().await {
-                    self.handle_message(msg).await;
+                    if let Err(e) = self.handle_message(msg).await {
+                        error!("Error in Registry task; e={}", e);
+                    }
                 }
             },
             "registry",
@@ -82,11 +87,9 @@ impl Registry {
         (sender, handle)
     }
 
-    async fn handle_message(&mut self, message: RegistryMessage) {
+    async fn handle_message(&mut self, message: RegistryMessage) -> Result<(), Error> {
         match message {
-            RegistryMessage::Dispatch(inner) => {
-                self.dispatch(inner);
-            }
+            RegistryMessage::Dispatch(inner) => self.dispatch(inner),
             RegistryMessage::JoinRequest {
                 token,
                 channel_id,
@@ -94,21 +97,20 @@ impl Registry {
                 reply_sender,
                 msg_ref,
                 payload,
-            } => {
-                self.handle_join_request(
-                    token,
-                    channel_id,
-                    mailbox_tx,
-                    reply_sender,
-                    msg_ref,
-                    payload,
-                );
-            }
+            } => self.handle_join_request(
+                token,
+                channel_id,
+                mailbox_tx,
+                reply_sender,
+                msg_ref,
+                payload,
+            ),
             RegistryMessage::Close => todo!(),
             RegistryMessage::Continue => todo!(),
             RegistryMessage::Debug(reply_to) => {
                 let reply = format!("{:#?}", self);
-                reply_to.send(reply);
+                let _ = reply_to.send(reply);
+                Ok(())
             }
             RegistryMessage::Inactivity(channel_id, reply_to) => {
                 let should_close = match self.last_join_at.get(&channel_id) {
@@ -119,10 +121,12 @@ impl Registry {
 
                 if should_close {
                     self.channels.remove(&channel_id);
-                    reply_to.send(RegistryMessage::Close);
+                    let _ = reply_to.send(RegistryMessage::Close);
                 } else {
-                    reply_to.send(RegistryMessage::Continue);
+                    let _ = reply_to.send(RegistryMessage::Continue);
                 }
+
+                Ok(())
             }
         }
     }
@@ -157,7 +161,7 @@ impl Registry {
         ws_reply_to: UnboundedSender<MessageReply>,
         msg_ref: MsgRef,
         payload: serde_json::Value,
-    ) {
+    ) -> Result<(), Error> {
         info!(
             "handle_join_request: token={}, channel_id={:?}",
             token, channel_id
@@ -166,13 +170,13 @@ impl Registry {
         if self.channels.get(&channel_id).is_none() {
             match channel_id.key().and_then(|key| self.templates.get(key)) {
                 Some(_) => {
-                    self.add_channel_from_template(channel_id.clone());
+                    self.add_channel_from_template(channel_id.clone())?;
                 }
 
                 None => {
                     error!("registered behavior not found for {:?}", channel_id);
                     // FIXME: send an error response to the socket here
-                    return;
+                    return Err(Error::NoTemplate);
                 }
             }
         }
@@ -193,20 +197,24 @@ impl Registry {
         join_msg.msg_ref = Some(msg_ref);
 
         println!("dispatching {:?}", join_msg);
-        self.dispatch(join_msg).unwrap();
+        self.dispatch(join_msg)
     }
 
     fn set_last_join_at(&mut self, channel_id: &ChannelId) {
         self.last_join_at.insert(channel_id.clone(), Instant::now());
     }
 
-    fn add_channel_from_template(&mut self, channel_id: ChannelId) {
+    fn add_channel_from_template(&mut self, channel_id: ChannelId) -> Result<(), Error> {
         let template = self.templates.get(channel_id.key().unwrap()).unwrap();
         let channel = template.new_channel(channel_id.clone());
         self.add_channel_inner(channel_id, channel, true)
     }
 
-    pub fn add_channel(&mut self, channel_id: ChannelId, channel: Box<dyn Channel>) {
+    pub fn add_channel(
+        &mut self,
+        channel_id: ChannelId,
+        channel: Box<dyn Channel>,
+    ) -> Result<(), Error> {
         self.add_channel_inner(channel_id, channel, false)
     }
 
@@ -216,7 +224,7 @@ impl Registry {
         channel_id: ChannelId,
         channel: Box<dyn Channel>,
         inactivity_timeout: bool,
-    ) {
+    ) -> Result<(), Error> {
         let (_, channel_sender) = ChannelRunner::spawn(
             channel_id.clone(),
             channel,
@@ -224,5 +232,7 @@ impl Registry {
             inactivity_timeout,
         );
         self.channels.entry(channel_id).or_insert(channel_sender);
+
+        Ok(())
     }
 }

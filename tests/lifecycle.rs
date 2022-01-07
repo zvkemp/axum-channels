@@ -84,7 +84,7 @@ async fn test_websocket_lifecycle() {
 fn run_server() -> (SocketAddr, JoinHandle<()>) {
     let mut registry = Registry::default();
 
-    registry.add_channel("default:*".parse().unwrap(), Box::new(DefaultChannel));
+    registry.add_channel("default:*".into(), Box::new(DefaultChannel));
     let (registry_sender, _registry_handle) = registry.start();
 
     let app = Router::new()

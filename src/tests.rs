@@ -82,7 +82,7 @@ async fn test_presence_join_leave() {
 
     tracing_subscriber::fmt::init();
     let mut registry = Registry::default();
-    registry.add_channel("default".parse().unwrap(), Box::new(DefaultChannel));
+    registry.add_channel("default".into(), Box::new(DefaultChannel));
 
     let (address, _server_handle, _registry) = run_server(registry);
 

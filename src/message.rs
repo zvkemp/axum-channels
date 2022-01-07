@@ -51,7 +51,7 @@ impl Message {
 }
 
 lazy_static::lazy_static! {
-    pub static ref PHX_CHANNEL: ChannelId = "phoenix".parse().unwrap();
+    pub static ref PHX_CHANNEL: ChannelId = "phoenix".into();
 }
 
 #[derive(Debug, Clone)]

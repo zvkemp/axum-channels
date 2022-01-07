@@ -16,14 +16,13 @@ use std::time::Duration;
 // - introduce traits for routing messages
 // - introduce traits AddressEndpoint (maybe this is just Channel)
 
-use crate::message::{self, Event, Message, MsgRef};
+use crate::message::{Event, Message, MsgRef};
 use crate::message::{MessageKind, MessageReply};
 use crate::registry::{RegistryMessage, RegistrySender};
 use crate::spawn_named;
 use crate::types::{ChannelId, Token};
 use serde_json::json;
-use tokio::sync::mpsc::error::SendError;
-use tokio::sync::mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
@@ -173,7 +172,7 @@ impl ChannelRunner {
                     tokio::select! {
                         m = self.incoming_receiver.recv() => {
                             match m {
-                                Some(mut message) => {
+                                Some(message) => {
                                     self.handle_incoming(message).await;
                                 }
                                 None => { break; }

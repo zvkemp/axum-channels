@@ -43,20 +43,18 @@ impl ChannelId {
     }
 }
 
-impl<'a> FromStr for ChannelId {
-    type Err = crate::ParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+impl<'a> From<&'a str> for ChannelId {
+    fn from(s: &'a str) -> Self {
         match s.char_indices().find(|(_, char)| *char == ':') {
-            Some((index, _)) => Ok(ChannelId {
+            Some((index, _)) => ChannelId {
                 raw: s.into(),
                 delimiter_idx: Some(index),
-            }),
+            },
 
-            None => Ok(ChannelId {
+            None => ChannelId {
                 raw: s.into(),
                 delimiter_idx: None,
-            }),
+            },
         }
     }
 }
