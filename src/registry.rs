@@ -5,6 +5,7 @@ use crate::types::{ChannelId, Token};
 use snafu::Snafu;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -41,13 +42,13 @@ impl Default for Registry {
 #[derive(Debug, Snafu)]
 pub enum Error {
     NoChannel,
+    ChannelDead,
     NoTemplate,
     Transport,
 }
 
 #[derive(Debug)]
 pub enum RegistryMessage {
-    Dispatch(MessageContext),
     JoinRequest {
         token: Token,
         channel_id: ChannelId,
@@ -89,7 +90,6 @@ impl Registry {
 
     async fn handle_message(&mut self, message: RegistryMessage) -> Result<(), Error> {
         match message {
-            RegistryMessage::Dispatch(inner) => self.dispatch(inner),
             RegistryMessage::JoinRequest {
                 token,
                 channel_id,
@@ -143,14 +143,24 @@ impl Registry {
             .or_insert_with(|| Box::new(channel));
     }
 
-    /// Send a message to a channel. Because the reigstry is typically behind a mutex,
+    /// Send a message to a channel. Because the registry is typically behind a mutex,
     /// this should be reserved for sockets that don't already have a copy of the channel sender.
-    fn dispatch(&self, message: MessageContext) -> Result<(), Error> {
-        self.channels
+    fn dispatch(&mut self, message: MessageContext) -> Result<(), Error> {
+        if let Err(SendError(returned)) = self
+            .channels
             .get(message.channel_id())
             .ok_or(Error::NoChannel)?
             .send(message)
-            .map_err(|_| Error::Transport)
+        {
+            // channel unexpectedly dead (probably something panicked in the channel task)
+            error!("channel unexpectedly closed");
+            // FIXME: need to disconnect the active sockets
+            self.channels.remove(returned.channel_id());
+
+            return Err(Error::ChannelDead);
+        }
+
+        Ok(())
     }
 
     fn handle_join_request(
