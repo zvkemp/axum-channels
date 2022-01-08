@@ -37,6 +37,8 @@ pub struct Conn {
     format: ConnFormat,
     mailbox_tx: UnboundedSender<Message>,
     mailbox_rx: UnboundedReceiver<Message>,
+    token: Token,
+    subscriptions: ReaderSubscriptions,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -76,11 +78,7 @@ pub async fn handle_connect<
     // be attached to messages to allow for responses to be send directly to the socket task for further processing.
     let (mailbox_tx, mailbox_rx) = unbounded_channel();
 
-    let conn = Conn {
-        mailbox_tx: mailbox_tx.clone(),
-        mailbox_rx,
-        format,
-    };
+    let conn = Conn::new(format, mailbox_tx.clone(), mailbox_rx, token);
 
     spawn_named(
         write(token, format, writer, receiver, mailbox_tx),
@@ -215,6 +213,8 @@ pub enum Error {
     ReplySend {
         source: SendError<MessageReply>,
     },
+
+    Closed,
 }
 
 // reading data from remote
@@ -226,7 +226,7 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
     reply_sender: UnboundedSender<MessageReply>,
     registry_sender: RegistrySender,
 ) -> Result<(), Error> {
-    let mut subscriptions = ReaderSubscriptions::new(token, conn.mailbox_tx.clone());
+    // let mut subscriptions = ReaderSubscriptions::new(token, conn.mailbox_tx.clone());
 
     let format = conn.format;
     let mailbox_tx = conn.mailbox_tx.clone();
@@ -234,6 +234,8 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
 
     // this task maps ws::Message to Message and sends them to mailbox_tx
     let _ws_handle = spawn_named(
+        // FIXME: determine whether to allow this to panic, and if so, ensure the mailbox
+        // also exits.
         async move {
             while let Some(msg) = ws_receiver.next().await {
                 match msg {
@@ -271,80 +273,17 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
     );
 
     while let Some(msg) = conn.mailbox_rx.recv().await {
-        match &msg.kind {
-            MessageKind::JoinRequest => {
-                debug!(
-                    "sending JoinRequest to registry; channel_id={}",
-                    msg.channel_id.id()
-                );
-
-                registry_sender
-                    .send(RegistryMessage::JoinRequest {
-                        token,
-                        channel_id: msg.channel_id,
-                        mailbox_tx: conn.mailbox_tx.clone(),
-                        reply_sender: reply_sender.clone(),
-                        msg_ref: msg.msg_ref.unwrap(),
-                        payload: msg.payload,
-                    })
-                    .context(RegistrySendSnafu)?;
-            }
-            MessageKind::DidJoin => {
-                debug!("received join confirmation");
-                subscriptions
-                    .channels
-                    .entry(msg.channel_id.clone())
-                    .or_insert_with(|| msg.channel_sender.unwrap());
-
-                // FIXME: payload here?
-                reply_sender
-                    .send(MessageReply::Join {
-                        channel_id: msg.channel_id,
-                        msg_ref: msg.msg_ref.unwrap(),
-                    })
-                    .context(ReplySendSnafu)?;
-            }
-
-            MessageKind::Leave => todo!(),
-
-            MessageKind::Broadcast => {
-                todo!() // This probably shouldn't be sent here
-            }
-
-            MessageKind::BroadcastPresence => {
-                todo!()
-            }
-
-            MessageKind::PresenceChange => {
-                todo!()
-            }
-
-            MessageKind::Event | MessageKind::BroadcastIntercept => {
-                if let Some(tx) = subscriptions.channels.get(&msg.channel_id) {
-                    let _ = tx.send(msg.decorate(token, conn.mailbox_tx.clone()));
+        if let Err(e) = conn
+            .handle_mailbox_message(msg, &registry_sender, &reply_sender)
+            .await
+        {
+            match e {
+                Error::Registry { source } => todo!(),
+                Error::RegistrySend { source } => todo!(),
+                Error::ReplySend { source } => todo!(),
+                Error::Closed => {
+                    return Err(Error::Closed);
                 }
-            }
-
-            MessageKind::Heartbeat => {
-                reply_sender
-                    .send(MessageReply::Heartbeat {
-                        msg_ref: msg.msg_ref.unwrap(),
-                    })
-                    .context(ReplySendSnafu)?;
-            }
-
-            MessageKind::Push => {
-                reply_sender
-                    .send(MessageReply::Push {
-                        channel_id: msg.channel_id,
-                        event: msg.event,
-                        payload: msg.payload,
-                    })
-                    .context(ReplySendSnafu)?;
-            }
-
-            MessageKind::Closed => {
-                break;
             }
         }
     }
@@ -389,4 +328,106 @@ where
 
     #[cfg(not(tokio_unstable))]
     tokio::spawn(task)
+}
+
+impl Conn {
+    async fn handle_mailbox_message(
+        &mut self,
+        msg: Message,
+        registry_sender: &RegistrySender,
+        reply_sender: &UnboundedSender<MessageReply>,
+    ) -> Result<(), Error> {
+        match &msg.kind {
+            MessageKind::JoinRequest => {
+                debug!(
+                    "sending JoinRequest to registry; channel_id={}",
+                    msg.channel_id.id()
+                );
+
+                registry_sender
+                    .send(RegistryMessage::JoinRequest {
+                        token: self.token,
+                        channel_id: msg.channel_id,
+                        mailbox_tx: self.mailbox_tx.clone(),
+                        reply_sender: reply_sender.clone(),
+                        msg_ref: msg.msg_ref.unwrap(),
+                        payload: msg.payload,
+                    })
+                    .context(RegistrySendSnafu)?;
+            }
+            MessageKind::DidJoin => {
+                debug!("received join confirmation");
+                self.subscriptions
+                    .channels
+                    .entry(msg.channel_id.clone())
+                    .or_insert_with(|| msg.channel_sender.unwrap());
+
+                // FIXME: payload here?
+                reply_sender
+                    .send(MessageReply::Join {
+                        channel_id: msg.channel_id,
+                        msg_ref: msg.msg_ref.unwrap(),
+                    })
+                    .context(ReplySendSnafu)?;
+            }
+
+            MessageKind::Leave => todo!(),
+
+            MessageKind::Broadcast => {
+                todo!() // This probably shouldn't be sent here
+            }
+
+            MessageKind::BroadcastPresence => {
+                todo!()
+            }
+
+            MessageKind::PresenceChange => {
+                todo!()
+            }
+
+            MessageKind::Event | MessageKind::BroadcastIntercept => {
+                if let Some(tx) = self.subscriptions.channels.get(&msg.channel_id) {
+                    let _ = tx.send(msg.decorate(self.token, self.mailbox_tx.clone()));
+                }
+            }
+
+            MessageKind::Heartbeat => {
+                if let Some(msg_ref) = msg.msg_ref {
+                    reply_sender
+                        .send(MessageReply::Heartbeat { msg_ref })
+                        .context(ReplySendSnafu)?;
+                }
+            }
+
+            MessageKind::Push => {
+                reply_sender
+                    .send(MessageReply::Push {
+                        channel_id: msg.channel_id,
+                        event: msg.event,
+                        payload: msg.payload,
+                    })
+                    .context(ReplySendSnafu)?;
+            }
+
+            MessageKind::Closed => return Err(Error::Closed),
+        }
+
+        Ok(())
+    }
+
+    fn new(
+        format: ConnFormat,
+        mailbox_tx: UnboundedSender<Message>,
+        mailbox_rx: UnboundedReceiver<Message>,
+        token: Token,
+    ) -> Conn {
+        let subscriptions = ReaderSubscriptions::new(token, mailbox_tx.clone());
+        Conn {
+            format,
+            mailbox_tx,
+            mailbox_rx,
+            token,
+            subscriptions,
+        }
+    }
 }
