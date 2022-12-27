@@ -2,7 +2,7 @@ use axum::{
     extract::{Extension, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
-    AddExtensionLayer, Router,
+    Router,
 };
 use axum_channels::{
     channel::{Channel, MessageContext},
@@ -89,7 +89,7 @@ fn run_server() -> (SocketAddr, JoinHandle<()>) {
 
     let app = Router::new()
         .route("/ws", get(handler))
-        .layer(AddExtensionLayer::new(registry_sender));
+        .layer(Extension(registry_sender));
 
     let listener = TcpListener::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap()).unwrap();
     let socket_addr = listener.local_addr().unwrap();
