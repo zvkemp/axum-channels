@@ -2,7 +2,7 @@ use axum::{
     extract::{Extension, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
-    AddExtensionLayer, Router,
+    Router,
 };
 use axum_channels::{
     registry::{Registry, RegistrySender},
@@ -17,7 +17,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/ws", get(handler))
-        .layer(AddExtensionLayer::new(registry_sender));
+        .layer(Extension(registry_sender));
 
     axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
         .serve(app.into_make_service())
