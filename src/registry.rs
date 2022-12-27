@@ -1,9 +1,13 @@
 use crate::channel::{Channel, ChannelRunner, MessageContext, NewChannel};
 use crate::message::{Message, MessageKind, MessageReply, MsgRef};
-use crate::spawn_named;
 use crate::types::{ChannelId, Token};
+use crate::{read, spawn_named};
+use axum::extract::ws::WebSocket;
+use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -47,6 +51,27 @@ pub enum Error {
     Transport,
 }
 
+impl From<RegistryMessage> for tokio_tungstenite::tungstenite::Message {
+    fn from(m: RegistryMessage) -> Self {
+        match m {
+            RegistryMessage::JoinRequest {
+                token,
+                channel_id,
+                mailbox_tx,
+                reply_sender,
+                msg_ref,
+                payload,
+            } => todo!(),
+            RegistryMessage::Close => todo!(),
+            RegistryMessage::Continue => todo!(),
+            RegistryMessage::Debug(_) => todo!(),
+            RegistryMessage::Inactivity(_, _) => todo!(),
+            RegistryMessage::AddPeer(_) => todo!(),
+        }
+        todo!()
+    }
+}
+
 #[derive(Debug)]
 pub enum RegistryMessage {
     JoinRequest {
@@ -62,6 +87,12 @@ pub enum RegistryMessage {
     Continue,
     Debug(oneshot::Sender<String>),
     Inactivity(ChannelId, oneshot::Sender<RegistryMessage>),
+    AddPeer(SocketAddr),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub enum IpcMessage {
+    Hello(String),
 }
 
 pub type RegistrySender = UnboundedSender<RegistryMessage>;
@@ -128,7 +159,33 @@ impl Registry {
 
                 Ok(())
             }
+            RegistryMessage::AddPeer(socket_addr) => {
+                self.add_peer(socket_addr).await.unwrap();
+                Ok(())
+            }
         }
+    }
+
+    // Issue a request to another broker to engage as a peer
+    pub async fn add_peer(&mut self, socket_addr: SocketAddr) -> Result<(), Error> {
+        // FIXME: send a uuid
+        // FIXME: self-healing connection struct?
+        let (stream, resp) =
+            tokio_tungstenite::connect_async(format!("ws://{}/broker", socket_addr))
+                .await
+                .unwrap();
+
+        // let (mut writer, reader) = stream.split();
+
+        // let token = crate::get_token();
+
+        // let msg = IpcMessage::Hello("hello from this thing".into());
+        // writer.send(serde_json::to_string(&msg).unwrap().into());
+
+        crate::handle_broker_connect(WebSocket { inner: stream }, self.sender.clone().unwrap())
+            .await;
+
+        Ok(())
     }
 
     // the write half of the socket is connected to the receiver, and the sender here will handle
@@ -244,5 +301,15 @@ impl Registry {
         self.channels.entry(channel_id).or_insert(channel_sender);
 
         Ok(())
+    }
+
+    pub async fn start_clustered(self, nodes: Vec<SocketAddr>) -> (RegistrySender, JoinHandle<()>) {
+        let (sender, handle) = self.start();
+
+        for node in nodes {
+            sender.send(RegistryMessage::AddPeer(node));
+        }
+
+        (sender, handle)
     }
 }

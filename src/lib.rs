@@ -44,6 +44,7 @@ pub struct Conn {
 #[derive(Debug, Clone, Copy)]
 pub enum ConnFormat {
     Phoenix,
+    Broker,
 }
 
 fn get_token() -> Token {
@@ -88,6 +89,56 @@ pub async fn handle_connect<
         read(token, conn, reader, sender, registry),
         &format!("socket_reader:{}", token),
     );
+}
+
+// entitites:
+// channel - state agent
+// broker -
+// socket -
+// message:
+//  - from client: broker:channel
+//  - reply:
+//    - to broker:channel:broadcast
+//    - to sockets
+// subscription:
+
+// Handles another peer asking to connect to this instance.
+pub async fn handle_broker_connect<S>(socket: S, registry: RegistrySender)
+where
+    S: Sink<ws::Message>,
+    S: Stream<Item = Result<ws::Message, axum::Error>>,
+    S: Send + 'static,
+    <S as futures::Sink<ws::Message>>::Error: std::fmt::Debug,
+{
+    {
+        let format = ConnFormat::Broker;
+        let token = get_token();
+
+        // the raw websocket stream
+        let (writer, reader) = socket.split();
+
+        // This channel receiver is consumed by the websocket writer;
+        // `sender` sends messages to be serialized and written into the websocket.
+        let (sender, receiver) = unbounded_channel();
+
+        // the `mailbox` is consumed in the socket reader function; raw data from the websocket
+        // is parsed and then sent to this channel. Additionally, clones of the mailbox_tx can
+        // be attached to messages to allow for responses to be send directly to the socket task for further processing.
+        let (mailbox_tx, mailbox_rx) = unbounded_channel();
+
+        let conn = Conn::new(format, mailbox_tx.clone(), mailbox_rx, token);
+
+        spawn_named(
+            write(token, format, writer, receiver, mailbox_tx),
+            &format!("broker_writer:{}", token),
+        );
+        spawn_named(
+            read(token, conn, reader, sender, registry),
+            &format!("broker_reader:{}", token),
+        );
+
+        // FIXME: authorization
+    }
 }
 
 // A set of senders pointing to the subscribed channels.
@@ -140,6 +191,7 @@ fn parse_message<'a>(
 ) -> Result<Message, Box<dyn std::error::Error + Send + Sync + 'a>> {
     match *format {
         ConnFormat::Phoenix => PhoenixParser::from_str(message).map_err(Into::into),
+        ConnFormat::Broker => todo!(),
     }
 }
 

@@ -48,7 +48,14 @@ impl Channel for DefaultChannel {
 }
 
 fn run_server(registry: Registry) -> (SocketAddr, JoinHandle<()>, RegistrySender) {
-    let (registry_sender, _registry_handle) = registry.start();
+    run_server_clustered(registry, vec![])
+}
+
+fn run_server_clustered(
+    registry: Registry,
+    nodes: Vec<SocketAddr>,
+) -> (SocketAddr, JoinHandle<()>, RegistrySender) {
+    let (registry_sender, _registry_handle) = registry.start_clustered(nodes);
 
     let app = Router::new()
         .route("/ws", get(handler))
@@ -231,4 +238,13 @@ where
     T: Future,
 {
     tokio_timeout(Duration::from_millis(50), future).await
+}
+
+#[tokio::test]
+async fn test_cluster() {
+    let registry1 = Registry::default();
+    let registry2 = Registry::default();
+
+    let (address1, _server_1, _registry) = run_server(registry1);
+    let (address2, _server_2, _registry) = run_server_clustered(registry2, vec![address1]);
 }
