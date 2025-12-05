@@ -1,18 +1,22 @@
 use axum::{
+    Router,
     extract::{Extension, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use axum_channels::{
-    channel::{Channel, MessageContext},
+    ConnFormat,
+    channel::{Channel, ChannelFuture, MessageContext},
     message::{Message, MessageKind},
     registry::{Registry, RegistrySender},
-    ConnFormat,
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
-use std::{net::SocketAddr, net::TcpListener};
+use std::{
+    future::ready,
+    net::{SocketAddr, TcpListener},
+    pin::Pin,
+};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tracing::{debug, info};
@@ -20,7 +24,7 @@ use tungstenite::protocol::Message as TgMessage;
 
 #[tokio::test]
 async fn test_websocket_lifecycle() {
-    std::env::set_var("RUST_LOG", "debug");
+    unsafe { std::env::set_var("RUST_LOG", "debug") };
     tracing_subscriber::fmt::init();
 
     println!("RUST_LOG={:?}", std::env::var("RUST_LOG"));
@@ -45,6 +49,7 @@ async fn test_websocket_lifecycle() {
         TgMessage::Text(
             json!([null, "1", "default:*", "phx_reply", {"response": {}, "status": "ok"}])
                 .to_string()
+                .into()
         )
     );
 
@@ -63,6 +68,7 @@ async fn test_websocket_lifecycle() {
         TgMessage::Text(
             json!([null, "2", "default:*", "phx_reply", {"response": {}, "status": "ok"}])
                 .to_string()
+                .into()
         )
     );
 
@@ -95,9 +101,8 @@ fn run_server() -> (SocketAddr, JoinHandle<()>) {
     let socket_addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
-        axum::Server::from_tcp(listener)
-            .unwrap()
-            .serve(app.into_make_service())
+        let async_listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        axum::serve(async_listener, app.into_make_service())
             .await
             .unwrap();
     });
@@ -117,10 +122,12 @@ async fn handler(
 #[derive(Debug, Clone)]
 struct DefaultChannel;
 
-#[axum::async_trait]
 impl Channel for DefaultChannel {
-    async fn handle_message(&mut self, message: &MessageContext) -> Option<Message> {
-        match &message.inner.kind {
+    fn handle_message<'a>(
+        &'a mut self,
+        message: &'a MessageContext,
+    ) -> ChannelFuture<'a, Option<Message>> {
+        Box::pin(ready(match &message.inner.kind {
             MessageKind::Event => Some(Message {
                 msg_ref: None,
                 join_ref: None,
@@ -131,13 +138,13 @@ impl Channel for DefaultChannel {
                 channel_sender: None,
             }),
             _ => None,
-        }
+        }))
     }
 
-    async fn handle_join(
+    fn handle_join(
         &mut self,
         _message: &MessageContext,
-    ) -> Result<Option<Message>, axum_channels::channel::Error> {
-        Ok(None)
+    ) -> Pin<Box<dyn Future<Output = axum_channels::channel::Result<Option<Message>>> + Send>> {
+        Box::pin(ready(Ok(None)))
     }
 }

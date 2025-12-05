@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::{debug, error, warn};
 use types::Token;
 
@@ -304,9 +304,9 @@ async fn read<S: Stream<Item = Result<ws::Message, axum::Error>> + Unpin + Send 
                             }
                         }
                         ws::Message::Binary(_) => todo!(),
-                        ws::Message::Ping(data) => {
-                            ws_reply_sender.send(MessageReply::Pong(data)).unwrap()
-                        } // FIXME unwrap
+                        ws::Message::Ping(data) => ws_reply_sender
+                            .send(MessageReply::Pong(data.into()))
+                            .unwrap(), // FIXME unwrap
                         ws::Message::Pong(_) => todo!(),
                         ws::Message::Close(frame) => {
                             return handle_close(mailbox_tx, frame);

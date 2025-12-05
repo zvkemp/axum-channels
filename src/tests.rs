@@ -1,14 +1,16 @@
 use axum::{
+    Router,
     extract::{Extension, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use futures::{Future, SinkExt, StreamExt};
 use http::Extensions;
 use std::{
     collections::{HashMap, HashSet},
+    future::ready,
     net::{SocketAddr, TcpListener},
+    pin::Pin,
     time::Duration,
 };
 use tokio::{
@@ -18,24 +20,23 @@ use tokio::{
 use tokio_tungstenite::connect_async;
 
 use crate::{
-    channel::{Channel, MessageContext, NewChannel, Presence},
-    message::{self, Message, MessageKind},
+    ConnFormat,
+    channel::{Channel, ChannelFuture, MessageContext, NewChannel, Presence},
+    message::{Message, MessageKind},
     registry::{Registry, RegistrySender},
     types::{ChannelId, Token},
-    ConnFormat,
 };
 
 #[derive(Debug, Default)]
 struct DefaultChannel;
 
-#[axum::async_trait]
 impl Channel for DefaultChannel {
-    async fn handle_presence(
-        &mut self,
-        channel_id: &ChannelId,
-        presence: &Presence,
-    ) -> crate::channel::Result<Option<Message>> {
-        Ok(Some(Message {
+    fn handle_presence<'a>(
+        &'a mut self,
+        channel_id: &'a crate::types::ChannelId,
+        presence: &'a Presence,
+    ) -> ChannelFuture<'a, crate::channel::Result<Option<Message>>> {
+        Box::pin(ready(Ok(Some(Message {
             channel_id: channel_id.clone(),
             event: "presence".into(),
             payload: serde_json::json!({"presence":presence.data}),
@@ -43,7 +44,7 @@ impl Channel for DefaultChannel {
             msg_ref: None,
             join_ref: None,
             channel_sender: None,
-        }))
+        }))))
     }
 }
 
@@ -65,9 +66,8 @@ fn run_server_clustered(
     let socket_addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
-        axum::Server::from_tcp(listener)
-            .unwrap()
-            .serve(app.into_make_service())
+        let async_listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        axum::serve(async_listener, app.into_make_service())
             .await
             .unwrap();
     });
@@ -158,17 +158,16 @@ struct StatefulChannel {
     socket_state: HashMap<Token, Extensions>,
 }
 
-#[axum::async_trait]
 impl Channel for StatefulChannel {
-    async fn handle_join(
+    fn handle_join(
         &mut self,
         context: &MessageContext,
-    ) -> crate::channel::Result<Option<Message>> {
-        Ok(Some(context.build_push(
+    ) -> Pin<Box<dyn Future<Output = crate::channel::Result<Option<Message>>> + Send>> {
+        Box::pin(ready(Ok(Some(context.build_push(
             None,
             "join_info".into(),
             serde_json::json!({"token": context.token }),
-        )))
+        )))))
     }
 }
 

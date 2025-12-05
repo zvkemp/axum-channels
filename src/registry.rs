@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -305,7 +305,7 @@ impl Registry {
         Ok(())
     }
 
-    pub async fn start_clustered(self, nodes: Vec<SocketAddr>) -> (RegistrySender, JoinHandle<()>) {
+    pub fn start_clustered(self, nodes: Vec<SocketAddr>) -> (RegistrySender, JoinHandle<()>) {
         let (sender, handle) = self.start();
 
         for node in nodes {

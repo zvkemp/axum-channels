@@ -1,12 +1,12 @@
 use axum::{
+    Router,
     extract::{Extension, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use axum_channels::{
-    registry::{Registry, RegistrySender},
     ConnFormat,
+    registry::{Registry, RegistrySender},
 };
 use tracing::debug;
 
@@ -19,8 +19,9 @@ async fn main() {
         .route("/ws", get(handler))
         .layer(Extension(registry_sender));
 
-    axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
-        .serve(app.into_make_service())
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+
+    axum::serve(listener, app.into_make_service())
         .await
         .unwrap();
 }

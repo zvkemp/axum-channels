@@ -6,7 +6,7 @@ use axum::extract::ws;
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MessageKind {
     JoinRequest,
     DidJoin,
@@ -26,7 +26,7 @@ pub type MsgRef = Arc<str>;
 pub type JoinRef = Arc<str>;
 pub type Event = Arc<str>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Message {
     pub kind: MessageKind,
     pub channel_id: ChannelId,
@@ -131,21 +131,21 @@ impl From<MessageReply> for ws::Message {
                 channel_id,
             } => {
                 let json_value = json!([null, null, channel_id.id(), &*event, payload]);
-                ws::Message::Text(serde_json::to_string(&json_value).unwrap())
+                ws::Message::Text(serde_json::to_string(&json_value).unwrap().into())
             }
-            MessageReply::Pong(data) => ws::Message::Pong(data),
+            MessageReply::Pong(data) => ws::Message::Pong(data.into()),
             MessageReply::Heartbeat { msg_ref } => {
                 // FIXME: msg_ref is escape-quoted; needs to be just "8" instead of "\"8\""
                 // FIXME: we also need to send a phx_reply for phx_join events
                 let json_value = json!([null, &*msg_ref, PHX_CHANNEL.id(), "phx_reply", {"response": {}, "status": "ok"}]);
-                ws::Message::Text(serde_json::to_string(&json_value).unwrap())
+                ws::Message::Text(serde_json::to_string(&json_value).unwrap().into())
             }
             MessageReply::Join {
                 msg_ref,
                 channel_id,
             } => {
                 let json_value = json!([null, &*msg_ref, channel_id.id(), "phx_reply", {"response": {}, "status": "ok"}]);
-                ws::Message::Text(serde_json::to_string(&json_value).unwrap())
+                ws::Message::Text(serde_json::to_string(&json_value).unwrap().into())
             }
             MessageReply::Event {
                 event,
@@ -158,7 +158,7 @@ impl From<MessageReply> for ws::Message {
                 channel_id,
             } => {
                 let json_value = json!([null, null, channel_id.id(), &*event, payload]);
-                ws::Message::Text(serde_json::to_string(&json_value).unwrap())
+                ws::Message::Text(serde_json::to_string(&json_value).unwrap().into())
             }
             MessageReply::BroadcastIntercept { .. } => {
                 todo!()

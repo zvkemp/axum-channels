@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::future::ready;
+use std::pin::Pin;
 use std::time::Duration;
 
 // High-level FIXME:
@@ -22,7 +24,7 @@ use crate::registry::{RegistryMessage, RegistrySender};
 use crate::spawn_named;
 use crate::types::{ChannelId, Token};
 use serde_json::json;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
@@ -69,40 +71,55 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+pub type ChannelFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 // FIXME: design: there's a conceptual overlap between MessageKind and these individual message handler callbacks
-#[axum::async_trait]
 pub trait Channel: std::fmt::Debug + Send + Sync {
-    async fn handle_message(&mut self, _context: &MessageContext) -> Option<Message> {
-        None
+    fn handle_message<'a>(
+        &'a mut self,
+        _context: &'a MessageContext,
+    ) -> ChannelFuture<'a, Option<Message>> {
+        Box::pin(ready(None))
     }
 
     /// receives a BroadcastIntercept for socket-specific processing
-    async fn handle_out(&mut self, _context: &MessageContext) -> Option<Message> {
-        None
+    fn handle_out<'a>(
+        &'a mut self,
+        _context: &'a MessageContext,
+    ) -> ChannelFuture<'a, Option<Message>> {
+        Box::pin(ready(None))
     }
 
     /// authorize new socket connections; return Ok(..) to allow the socket to join the channel, with
     /// an optional response
-    async fn handle_join(&mut self, _context: &MessageContext) -> Result<Option<Message>> {
-        Ok(None)
+    fn handle_join<'a>(
+        &'a mut self,
+        _context: &'a MessageContext,
+    ) -> ChannelFuture<'a, Result<Option<Message>>> {
+        Box::pin(ready(Ok(None)))
     }
 
     // FIXME: use MessageContext
-    async fn handle_presence(
-        &mut self,
-        _channel_id: &crate::types::ChannelId,
-        _presence: &Presence,
-    ) -> Result<Option<Message>> {
-        Ok(None)
+    fn handle_presence<'a>(
+        &'a mut self,
+        _channel_id: &'a crate::types::ChannelId,
+        _presence: &'a Presence,
+    ) -> ChannelFuture<'a, Result<Option<Message>>> {
+        Box::pin(ready(Ok(None)))
     }
 
-    async fn handle_info(&mut self, _context: &MessageContext) -> Result<Option<Message>> {
-        Ok(None)
+    fn handle_info<'a>(
+        &'a mut self,
+        _context: &'a MessageContext,
+    ) -> ChannelFuture<'a, Result<Option<Message>>> {
+        Box::pin(ready(Ok(None)))
     }
 
-    async fn handle_leave(&mut self, _context: &MessageContext) -> Result<Option<Message>> {
-        Ok(None)
+    fn handle_leave<'a>(
+        &'a mut self,
+        _context: &'a MessageContext,
+    ) -> ChannelFuture<'a, Result<Option<Message>>> {
+        Box::pin(ready(Ok(None)))
     }
 }
 
@@ -249,7 +266,7 @@ impl ChannelRunner {
                 inner:
                     Message {
                         kind: MessageKind::JoinRequest,
-                        ref channel_id,
+                        channel_id,
                         payload,
                         ..
                     },
@@ -370,7 +387,7 @@ fn spawn_broadcast_subscriber(
 
 // Sort of a hybrid between a channel and a message;
 // i.e. a message with channel/socket context around it
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MessageContext {
     pub token: Token,
     pub inner: Message,
