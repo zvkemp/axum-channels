@@ -160,6 +160,7 @@ impl Registry {
                 Ok(())
             }
             RegistryMessage::AddPeer(socket_addr) => {
+                #[cfg(fixme_add_peer)]
                 self.add_peer(socket_addr).await.unwrap();
                 Ok(())
             }
@@ -167,6 +168,7 @@ impl Registry {
     }
 
     // Issue a request to another broker to engage as a peer
+    #[cfg(fixme_add_peer)]
     pub async fn add_peer(&mut self, socket_addr: SocketAddr) -> Result<(), Error> {
         // FIXME: send a uuid
         // FIXME: self-healing connection struct?

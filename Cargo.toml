@@ -17,7 +17,7 @@ tracing = "*"
 http = "*"
 lazy_static = "*"
 snafu = "0.7"
-tokio-tungstenite = "*"
+tokio-tungstenite = "0.17.2"
 tungstenite = "*"
 
 [dev-dependencies]
