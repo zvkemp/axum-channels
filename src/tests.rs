@@ -48,11 +48,11 @@ impl Channel for DefaultChannel {
     }
 }
 
-fn run_server(registry: Registry) -> (SocketAddr, JoinHandle<()>, RegistrySender) {
-    run_server_clustered(registry, vec![])
+async fn run_server(registry: Registry) -> (SocketAddr, JoinHandle<()>, RegistrySender) {
+    run_server_clustered(registry, vec![]).await
 }
 
-fn run_server_clustered(
+async fn run_server_clustered(
     registry: Registry,
     nodes: Vec<SocketAddr>,
 ) -> (SocketAddr, JoinHandle<()>, RegistrySender) {
@@ -62,12 +62,13 @@ fn run_server_clustered(
         .route("/ws", get(handler))
         .layer(Extension(registry_sender.clone()));
 
-    let listener = TcpListener::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap()).unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap())
+        .await
+        .unwrap();
     let socket_addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
-        let async_listener = tokio::net::TcpListener::from_std(listener).unwrap();
-        axum::serve(async_listener, app.into_make_service())
+        axum::serve(listener, app.into_make_service())
             .await
             .unwrap();
     });
@@ -91,7 +92,7 @@ async fn test_presence_join_leave() {
     let mut registry = Registry::default();
     registry.add_channel("default".into(), Box::new(DefaultChannel));
 
-    let (address, _server_handle, _registry) = run_server(registry);
+    let (address, _server_handle, _registry) = run_server(registry).await;
 
     let address = format!("ws://{}/ws", address);
     let (ws_stream, _) = connect_async(&address).await.expect("Failed to connect");
@@ -199,7 +200,7 @@ async fn test_channel_templates() {
     registry.register_template("stateful", StatefulChannel::new());
     registry.register_template("defaultable", TemplateWithDefault::default());
 
-    let (address, _server_handle, _registry) = run_server(registry);
+    let (address, _server_handle, _registry) = run_server(registry).await;
 
     let address = format!("ws://{}/ws", address);
     let (ws_stream, _) = connect_async(&address).await.expect("Failed to connect");
@@ -244,6 +245,6 @@ async fn test_cluster() {
     let registry1 = Registry::default();
     let registry2 = Registry::default();
 
-    let (address1, _server_1, _registry) = run_server(registry1);
-    let (address2, _server_2, _registry) = run_server_clustered(registry2, vec![address1]);
+    let (address1, _server_1, _registry) = run_server(registry1).await;
+    let (address2, _server_2, _registry) = run_server_clustered(registry2, vec![address1]).await;
 }

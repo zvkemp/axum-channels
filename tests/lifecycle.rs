@@ -12,12 +12,8 @@ use axum_channels::{
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
-use std::{
-    future::ready,
-    net::{SocketAddr, TcpListener},
-    pin::Pin,
-};
-use tokio::task::JoinHandle;
+use std::{future::ready, net::SocketAddr, pin::Pin};
+use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::connect_async;
 use tracing::{debug, info};
 use tungstenite::protocol::Message as TgMessage;
@@ -31,7 +27,7 @@ async fn test_websocket_lifecycle() {
 
     info!("hello");
     debug!("hello");
-    let (address, _server_handle) = run_server();
+    let (address, _server_handle) = run_server().await;
 
     let address = format!("ws://{}/ws", address);
     let (ws_stream, _) = connect_async(&address).await.expect("Failed to connect");
@@ -87,7 +83,7 @@ async fn test_websocket_lifecycle() {
     assert_eq!(msg1_2, msg2_2);
 }
 
-fn run_server() -> (SocketAddr, JoinHandle<()>) {
+async fn run_server() -> (SocketAddr, JoinHandle<()>) {
     let mut registry = Registry::default();
 
     registry.add_channel("default:*".into(), Box::new(DefaultChannel));
@@ -97,12 +93,13 @@ fn run_server() -> (SocketAddr, JoinHandle<()>) {
         .route("/ws", get(handler))
         .layer(Extension(registry_sender));
 
-    let listener = TcpListener::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap()).unwrap();
+    let listener = TcpListener::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap())
+        .await
+        .unwrap();
     let socket_addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
-        let async_listener = tokio::net::TcpListener::from_std(listener).unwrap();
-        axum::serve(async_listener, app.into_make_service())
+        axum::serve(listener, app.into_make_service())
             .await
             .unwrap();
     });
